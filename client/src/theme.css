@@ -1,0 +1,56 @@
+@import url('https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700;900&family=Zen+Maru+Gothic:wght@500;700;900&display=swap');
+@import "tailwindcss";
+@import "tailwindcss-safe-area";
+
+@theme {
+  --text-xs: 12px;
+  --text-xs--line-height: 16px;
+  --text-sm: 14px;
+  --text-sm--line-height: 20px;
+  --text-base: 16px;
+  --text-base--line-height: 24px;
+  --text-lg: 18px;
+  --text-lg--line-height: 28px;
+  --text-xl: 20px;
+  --text-xl--line-height: 28px;
+  --text-2xl: 24px;
+  --text-2xl--line-height: 32px;
+  --text-3xl: 30px;
+  --text-3xl--line-height: 36px;
+  --text-4xl: 36px;
+  --text-4xl--line-height: 40px;
+  --font-display: "Zen Maru Gothic", "Zen Kaku Gothic New", system-ui, sans-serif;
+  --font-body: "Zen Kaku Gothic New", system-ui, -apple-system, sans-serif;
+}
+
+:root {
+  color-scheme: light dark;
+  --bg: #fffaf5;
+  --surface: #ffffff;
+  --surface2: #fff3e6;
+  --text: #1c1917;
+  --dim: #78716c;
+  --border: #f0e6db;
+  --accent: #ea580c;
+  --accent2: #15803d;
+  --radius: 16px;
+  --space-surface: var(--surface);
+  --space-surface-alt: var(--surface2);
+  --space-muted: var(--dim);
+  --space-border: var(--border);
+  --space-accent: var(--accent);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1a1512;
+    --surface: #29211c;
+    --surface2: #352a22;
+    --text: #fafaf9;
+    --dim: #a8a29e;
+    --border: #44382f;
+    --accent: #fb923c;
+    --accent2: #4ade80;
+  }
+}
+body { font-family: var(--font-body); background: var(--bg); color: var(--text); }
+.font-display { font-family: var(--font-display); }

@@ -1,0 +1,629 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { SafeAreaTopScrim } from "@hatch/space-sdk/client";
+import { api, type ApiResponse } from "./api";
+
+type Bundle = ApiResponse<typeof api, "getDayBundle">;
+type Meal = Bundle["meals"][number];
+type Master = Bundle["masters"][number];
+type RecentItem = Bundle["recentByType"]["breakfast"][number];
+type MealType = Meal["mealType"];
+
+const MEAL_LABEL: Record<MealType, { label: string; emoji: string; color: string }> = {
+  breakfast: { label: "朝食", emoji: "🌅", color: "#f59e0b" },
+  lunch: { label: "昼食", emoji: "☀️", color: "#ea580c" },
+  dinner: { label: "夕食", emoji: "🌙", color: "#7c3aed" },
+  snack: { label: "間食", emoji: "🍪", color: "#15803d" },
+};
+
+const QUICK_FOODS: { name: string; kcal: number; p: number; f: number; c: number }[] = [
+  { name: "ごはん（茶碗1杯 150g）", kcal: 234, p: 3.8, f: 0.5, c: 55.7 },
+  { name: "食パン（6枚切り1枚）", kcal: 149, p: 5.3, f: 2.5, c: 26.6 },
+  { name: "おにぎり（鮭）", kcal: 180, p: 4.5, f: 1.2, c: 37 },
+  { name: "ゆで卵 1個", kcal: 76, p: 6.2, f: 5.2, c: 0.2 },
+  { name: "納豆 1パック", kcal: 100, p: 8.3, f: 5.0, c: 6.1 },
+  { name: "鶏むね肉 100g（皮なし）", kcal: 116, p: 23.3, f: 1.9, c: 0.1 },
+  { name: "サラダチキン", kcal: 114, p: 21.7, f: 1.7, c: 0.3 },
+  { name: "味噌汁 1杯", kcal: 34, p: 2.1, f: 1.0, c: 4.2 },
+  { name: "うどん 1玉", kcal: 256, p: 6.5, f: 0.9, c: 55 },
+  { name: "そば 1玉", kcal: 228, p: 9.6, f: 1.5, c: 44 },
+  { name: "ラーメン 1杯", kcal: 450, p: 18, f: 12, c: 65 },
+  { name: "カレーライス 1皿", kcal: 750, p: 18, f: 28, c: 105 },
+  { name: "牛丼（並）", kcal: 650, p: 22, f: 22, c: 88 },
+  { name: "バナナ 1本", kcal: 93, p: 1.1, f: 0.2, c: 24 },
+  { name: "ヨーグルト 100g", kcal: 62, p: 3.6, f: 3.0, c: 5.0 },
+  { name: "プロテイン 1杯", kcal: 110, p: 21, f: 1.0, c: 4.0 },
+];
+
+function portionLabel(p: number): string {
+  if (p === 1) return "1食分";
+  if (p === 0.5) return "半分";
+  if (p === 0.25) return "1/4";
+  if (p === 0.75) return "3/4";
+  return `×${p}`;
+}
+function scaleKcal(base: number, portion: number): number { return Math.round(base * portion); }
+function scaleMacro(v: number | null, portion: number): number | null {
+  if (v == null) return null;
+  return Math.round(v * portion * 10) / 10;
+}
+function unscaleKcal(scaled: number, portion: number): number {
+  if (!portion || portion === 1) return scaled;
+  return Math.round(scaled / portion);
+}
+function unscaleMacro(v: number | null, portion: number): number | null {
+  if (v == null || !portion || portion === 1) return v;
+  return Math.round((v / portion) * 10) / 10;
+}
+
+const PORTION_PRESETS: { v: number; label: string }[] = [
+  { v: 1, label: "1食分" },
+  { v: 0.75, label: "3/4" },
+  { v: 0.5, label: "半分" },
+  { v: 0.25, label: "1/4" },
+];
+
+function PortionSelector({ value, onChange, label }: { value: number; onChange: (v: number) => void; label: string }) {
+  const isPreset = PORTION_PRESETS.some(p => p.v === value);
+  const [customActive, setCustomActive] = useState(!isPreset);
+  const [customText, setCustomText] = useState(!isPreset ? String(value) : "0.6");
+  useEffect(() => {
+    if (!PORTION_PRESETS.some(p => p.v === value)) {
+      setCustomActive(true);
+      setCustomText(String(value));
+    } else {
+      setCustomActive(false);
+    }
+  }, [value]);
+  function handleCustom(text: string) {
+    setCustomText(text);
+    const n = Number(text);
+    if (!Number.isNaN(n) && n >= 0.1 && n <= 0.9) onChange(Math.round(n * 100) / 100);
+  }
+  const customValid = customText !== "" && !Number.isNaN(Number(customText)) && Number(customText) >= 0.1 && Number(customText) <= 0.9;
+  return (
+    <div>
+      <div className="text-xs font-bold text-[var(--dim)]">{label}</div>
+      <div className="flex gap-1.5 mt-1.5 flex-wrap" role="group" aria-label={label}>
+        {PORTION_PRESETS.map(p => (
+          <button key={p.v} type="button" aria-pressed={!customActive && value === p.v} onClick={() => { setCustomActive(false); onChange(p.v); }} className={`px-3 py-2 rounded-full text-sm font-bold border ${!customActive && value === p.v ? "bg-[var(--accent)] text-white border-transparent" : "border-[var(--border)]"}`}>{p.label}</button>
+        ))}
+        <button type="button" aria-pressed={customActive} onClick={() => { setCustomActive(true); const n = Number(customText); if (!Number.isNaN(n) && n >= 0.1 && n <= 0.9) onChange(Math.round(n * 100) / 100); else { setCustomText("0.6"); onChange(0.6); } }} className={`px-3 py-2 rounded-full text-sm font-bold border ${customActive ? "bg-[var(--accent)] text-white border-transparent" : "border-[var(--border)]"}`}>自由入力</button>
+      </div>
+      {customActive && (
+        <div className="mt-2 flex items-center gap-2 flex-wrap">
+          <input aria-label="自由入力の割合（0.1〜0.9）" type="number" inputMode="decimal" step="0.05" min="0.1" max="0.9" value={customText} onChange={e => handleCustom(e.target.value)} className="w-24 rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm" />
+          <input aria-label="割合スライダー" type="range" min="0.1" max="0.9" step="0.05" value={customValid ? Number(customText) : 0.6} onChange={e => handleCustom(e.target.value)} className="flex-1 min-w-28 accent-[#ea580c]" />
+          <span className="text-xs text-[var(--dim)]">0.1〜0.9{customValid ? `（×${Number(customText)}）` : " の範囲で入力"}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function toKey(d: Date) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function todayKey() { return toKey(new Date()); }
+function addDays(key: string, delta: number) {
+  const d = new Date(`${key}T12:00:00`);
+  d.setDate(d.getDate() + delta);
+  return toKey(d);
+}
+function formatJa(key: string) {
+  const d = new Date(`${key}T12:00:00`);
+  const days = ["日", "月", "火", "水", "木", "金", "土"];
+  return `${d.getMonth() + 1}月${d.getDate()}日（${days[d.getDay()] ?? ""}）`;
+}
+function isToday(key: string) { return key === todayKey(); }
+
+function Ring({ value, goal }: { value: number; goal: number }) {
+  const pct = goal > 0 ? Math.min(100, (value / goal) * 100) : 0;
+  const R = 84; const C = 2 * Math.PI * R;
+  const over = value > goal;
+  return (
+    <div className="relative mx-auto" style={{ width: 210, height: 210 }}>
+      <svg width="210" height="210" viewBox="0 0 210 210" className="-rotate-90">
+        <circle cx="105" cy="105" r={R} fill="none" stroke="var(--border)" strokeWidth="14" />
+        <circle cx="105" cy="105" r={R} fill="none" stroke={over ? "#dc2626" : "var(--accent)"} strokeWidth="14" strokeLinecap="round" strokeDasharray={C} strokeDashoffset={C - (C * pct) / 100} style={{ transition: "stroke-dashoffset .5s ease" }} />
+      </svg>
+      <div className="absolute inset-0 flex flex-col items-center justify-center text-center px-6">
+        <div className="text-[11px] font-bold tracking-widest text-[var(--dim)]">{over ? "オーバー" : "あと"}</div>
+        <div className={`font-display text-[42px] leading-none font-black ${over ? "text-red-600" : ""}`}>{Math.abs(goal - value).toLocaleString()}</div>
+        <div className="text-xs text-[var(--dim)] mt-1">kcal / 目標 {goal.toLocaleString()}</div>
+        <div className="mt-2 text-sm font-bold">摂取 {value.toLocaleString()} kcal</div>
+        <div className="text-[11px] text-[var(--dim)]">{Math.round(pct)}% 達成</div>
+      </div>
+    </div>
+  );
+}
+
+type AddVars = {
+  name: string; calories: number;
+  protein: number | null; fat: number | null; carbs: number | null;
+  mealType: MealType; masterId?: number; portion: number;
+};
+
+export function App() {
+  const qc = useQueryClient();
+  const [date, setDate] = useState(todayKey());
+  const [showForm, setShowForm] = useState(false);
+  const [editing, setEditing] = useState<Meal | null>(null);
+  const [showGoal, setShowGoal] = useState(false);
+  const [showQuick, setShowQuick] = useState(false);
+  const [showMasters, setShowMasters] = useState(false);
+  const [showWeightForm, setShowWeightForm] = useState(false);
+
+  // form state
+  const [name, setName] = useState("");
+  const [calories, setCalories] = useState("");
+  const [protein, setProtein] = useState("");
+  const [fat, setFat] = useState("");
+  const [carbs, setCarbs] = useState("");
+  const [mealType, setMealType] = useState<MealType>("lunch");
+  const [portion, setPortion] = useState(1);
+  const [instantPortion, setInstantPortion] = useState(1);
+  const [goalInput, setGoalInput] = useState("");
+  const [weightInput, setWeightInput] = useState("");
+  const [masterQuery, setMasterQuery] = useState("");
+  const [confirmDel, setConfirmDel] = useState<number | null>(null);
+  const [confirmDelMaster, setConfirmDelMaster] = useState<number | null>(null);
+  const [suggestOpen, setSuggestOpen] = useState(false);
+  const [debouncedName, setDebouncedName] = useState("");
+  const tempIdRef = useRef(-1);
+  const backfilledRef = useRef(false);
+
+  // 画面の全データを1リクエストで取得（前回データを保持して切り替えを瞬時に）
+  const bundleQ = useQuery({
+    queryKey: ["bundle", date],
+    queryFn: () => api.getDayBundle({ date }),
+    placeholderData: keepPreviousData,
+    staleTime: 30_000,
+  });
+  const day = bundleQ.data;
+
+  // 入力候補は少し遅らせて検索（タイプ中のリクエストを減らす）
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedName(name), 200);
+    return () => clearTimeout(t);
+  }, [name]);
+  const suggestQ = useQuery({
+    queryKey: ["suggest", debouncedName, mealType],
+    queryFn: () => api.suggestFoods({ query: debouncedName, mealType }),
+    enabled: showForm && !editing && debouncedName.trim().length > 0,
+    staleTime: 60_000,
+  });
+
+  const invalidate = () => { qc.invalidateQueries({ queryKey: ["bundle"] }); };
+
+  // 既存の履歴があるのにマスターが空なら一度だけ自動で一括登録
+  const backfillMut = useMutation({
+    mutationFn: () => api.backfillMasters({}),
+    onSuccess: invalidate,
+  });
+  useEffect(() => {
+    if (!day || backfilledRef.current) return;
+    const hasHistory = day.meals.length > 0 || (Object.keys(day.recentByType) as MealType[]).some(t => day.recentByType[t].length > 0);
+    if (day.masters.length === 0 && hasHistory) {
+      backfilledRef.current = true;
+      backfillMut.mutate();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [day]);
+
+  // ---- 楽観的更新つきミューテーション ----
+  const addMut = useMutation({
+    mutationFn: (v: AddVars) => v.masterId != null
+      ? api.addMealFromMaster({ masterId: v.masterId, mealType: v.mealType, portion: v.portion, date })
+      : api.addMeal({ name: v.name, calories: v.calories, protein: v.protein, fat: v.fat, carbs: v.carbs, mealType: v.mealType, portion: v.portion, date }),
+    onMutate: async (v) => {
+      await qc.cancelQueries({ queryKey: ["bundle", date] });
+      const prev = qc.getQueryData<Bundle>(["bundle", date]);
+      if (prev) {
+        const temp: Meal = {
+          id: tempIdRef.current--, name: v.name, calories: scaleKcal(v.calories, v.portion),
+          protein: scaleMacro(v.protein, v.portion), fat: scaleMacro(v.fat, v.portion), carbs: scaleMacro(v.carbs, v.portion),
+          mealType: v.mealType, portion: v.portion, date, created_at: new Date().toISOString(),
+        };
+        const meals = [...prev.meals, temp];
+        qc.setQueryData<Bundle>(["bundle", date], {
+          ...prev, meals,
+          totalCalories: meals.reduce((s, m) => s + m.calories, 0),
+          totalProtein: Math.round(meals.reduce((s, m) => s + (m.protein ?? 0), 0) * 10) / 10,
+          totalFat: Math.round(meals.reduce((s, m) => s + (m.fat ?? 0), 0) * 10) / 10,
+          totalCarbs: Math.round(meals.reduce((s, m) => s + (m.carbs ?? 0), 0) * 10) / 10,
+        });
+      }
+      return { prev };
+    },
+    onError: (_e, _v, ctx) => { if (ctx?.prev) qc.setQueryData(["bundle", date], ctx.prev); },
+    onSettled: invalidate,
+  });
+
+  const editMut = useMutation({
+    mutationFn: () => api.updateMeal({ id: editing!.id, name: name.trim(), calories: Number(calories), protein: protein ? Number(protein) : null, fat: fat ? Number(fat) : null, carbs: carbs ? Number(carbs) : null, mealType, portion }),
+    onSuccess: () => { invalidate(); resetForm(); },
+  });
+  const delMut = useMutation({
+    mutationFn: (id: number) => api.deleteMeal({ id }),
+    onMutate: async (id) => {
+      await qc.cancelQueries({ queryKey: ["bundle", date] });
+      const prev = qc.getQueryData<Bundle>(["bundle", date]);
+      if (prev) {
+        const meals = prev.meals.filter(m => m.id !== id);
+        qc.setQueryData<Bundle>(["bundle", date], {
+          ...prev, meals,
+          totalCalories: meals.reduce((s, m) => s + m.calories, 0),
+          totalProtein: Math.round(meals.reduce((s, m) => s + (m.protein ?? 0), 0) * 10) / 10,
+          totalFat: Math.round(meals.reduce((s, m) => s + (m.fat ?? 0), 0) * 10) / 10,
+          totalCarbs: Math.round(meals.reduce((s, m) => s + (m.carbs ?? 0), 0) * 10) / 10,
+        });
+      }
+      return { prev };
+    },
+    onError: (_e, _v, ctx) => { if (ctx?.prev) qc.setQueryData(["bundle", date], ctx.prev); },
+    onSettled: invalidate,
+  });
+  const goalMut = useMutation({ mutationFn: () => api.updateGoal({ dailyGoal: Number(goalInput) }), onSuccess: () => { invalidate(); setShowGoal(false); } });
+  const weightMut = useMutation({
+    mutationFn: () => api.addWeight({ weight: Number(weightInput), date }),
+    onMutate: async () => {
+      await qc.cancelQueries({ queryKey: ["bundle", date] });
+      const prev = qc.getQueryData<Bundle>(["bundle", date]);
+      if (prev) {
+        const w = { id: tempIdRef.current--, weight: Number(weightInput), date };
+        const weights = [w, ...prev.weights.filter(x => x.date !== date)].sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id).slice(0, 30);
+        qc.setQueryData<Bundle>(["bundle", date], { ...prev, weights });
+      }
+      return { prev };
+    },
+    onError: (_e, _v, ctx) => { if (ctx?.prev) qc.setQueryData(["bundle", date], ctx.prev); },
+    onSuccess: () => { setWeightInput(""); setShowWeightForm(false); },
+    onSettled: invalidate,
+  });
+  const delWeightMut = useMutation({ mutationFn: (id: number) => api.deleteWeight({ id }), onSuccess: invalidate });
+  const delMasterMut = useMutation({ mutationFn: (id: number) => api.deleteMaster({ id }), onSuccess: invalidate });
+
+  function resetForm() { setName(""); setCalories(""); setProtein(""); setFat(""); setCarbs(""); setPortion(1); setEditing(null); setShowForm(false); setSuggestOpen(false); }
+  function startEdit(m: Meal) { const p = m.portion ?? 1; setEditing(m); setName(m.name); setPortion(p); setCalories(String(unscaleKcal(m.calories, p))); setProtein(m.protein != null ? String(unscaleMacro(m.protein, p) ?? "") : ""); setFat(m.fat != null ? String(unscaleMacro(m.fat, p) ?? "") : ""); setCarbs(m.carbs != null ? String(unscaleMacro(m.carbs, p) ?? "") : ""); setMealType(m.mealType); setShowForm(true); setSuggestOpen(false); window.scrollTo({ top: 0, behavior: "smooth" }); }
+
+  function addRecent(item: RecentItem, t: MealType) {
+    addMut.mutate({ name: item.name, calories: item.calories, protein: item.protein, fat: item.fat, carbs: item.carbs, mealType: t, portion: instantPortion });
+  }
+  function addMaster(m: Master, t: MealType) {
+    addMut.mutate({ name: m.name, calories: m.calories, protein: m.protein, fat: m.fat, carbs: m.carbs, mealType: t, masterId: m.id, portion: instantPortion });
+  }
+  function addQuick(f: typeof QUICK_FOODS[number], t: MealType) {
+    addMut.mutate({ name: f.name, calories: f.kcal, protein: f.p, fat: f.f, carbs: f.c, mealType: t, portion: instantPortion });
+  }
+  function applySuggestion(s: { name: string; calories: number; protein: number | null; fat: number | null; carbs: number | null }) {
+    setName(s.name);
+    setCalories(String(s.calories));
+    setProtein(s.protein != null ? String(s.protein) : "");
+    setFat(s.fat != null ? String(s.fat) : "");
+    setCarbs(s.carbs != null ? String(s.carbs) : "");
+    setSuggestOpen(false);
+  }
+
+  const grouped = useMemo(() => {
+    const g: Record<MealType, Meal[]> = { breakfast: [], lunch: [], dinner: [], snack: [] };
+    day?.meals.forEach(m => g[m.mealType].push(m));
+    return g;
+  }, [day]);
+
+  const filteredMasters = useMemo(() => {
+    if (!day) return [];
+    const q = masterQuery.trim();
+    if (!q) return day.masters;
+    return day.masters.filter(m => m.name.includes(q));
+  }, [day, masterQuery]);
+
+  const localSuggestions = useMemo(() => {
+    if (!day || !name.trim() || editing) return [];
+    const q = name.trim();
+    return day.masters.filter(m => m.name.includes(q)).slice(0, 5).map(m => ({
+      name: m.name, calories: m.calories, protein: m.protein, fat: m.fat, carbs: m.carbs, source: "master" as const,
+    }));
+  }, [day, name, editing]);
+
+  const suggestions = useMemo(() => {
+    const server = suggestQ.data?.suggestions ?? [];
+    const seen = new Set<string>();
+    const merged: typeof server = [];
+    for (const s of [...localSuggestions, ...server]) {
+      if (seen.has(s.name)) continue;
+      seen.add(s.name);
+      merged.push(s);
+      if (merged.length >= 8) break;
+    }
+    return merged;
+  }, [localSuggestions, suggestQ.data]);
+
+  const pfcMax = { p: 80, f: 65, c: 260 }; // 参考値（一般的な目安）
+
+  return (
+    <div className="min-h-screen bg-[var(--bg)] pb-28">
+      <SafeAreaTopScrim backgroundColor="var(--bg)" />
+      <main className="mx-auto max-w-2xl px-4 pt-4">
+
+        {/* Date nav */}
+        <div className="flex items-center justify-between gap-2">
+          <button aria-label="前の日" onClick={() => setDate(addDays(date, -1))} className="w-10 h-10 rounded-full bg-[var(--surface)] border border-[var(--border)] text-lg font-bold shadow-sm">‹</button>
+          <div className="text-center">
+            <div className="font-display text-lg font-black leading-tight">{isToday(date) ? "今日" : formatJa(date)}</div>
+            {isToday(date) ? <div className="text-xs text-[var(--dim)]">{formatJa(date)}</div> : <button onClick={() => setDate(todayKey())} className="text-xs font-bold text-[var(--accent)] underline">今日に戻る</button>}
+          </div>
+          <button aria-label="次の日" onClick={() => setDate(addDays(date, 1))} className="w-10 h-10 rounded-full bg-[var(--surface)] border border-[var(--border)] text-lg font-bold shadow-sm">›</button>
+        </div>
+        <div className="mt-2 flex justify-center">
+          <input aria-label="日付を選択" type="date" value={date} onChange={e => e.target.value && setDate(e.target.value)} className="text-xs bg-transparent text-[var(--dim)] border border-[var(--border)] rounded-full px-3 py-1" />
+        </div>
+
+        {bundleQ.isPending && <p className="py-16 text-center text-sm text-[var(--dim)]">読み込み中…</p>}
+        {bundleQ.error && <div className="mt-6 rounded-2xl bg-red-50 border border-red-200 p-4 text-sm text-red-800">読み込めませんでした。<button className="ml-2 font-bold underline" onClick={() => bundleQ.refetch()}>再試行</button></div>}
+
+        {day && (
+          <>
+            {/* Hero ring */}
+            <section className="mt-4 rounded-[28px] bg-[var(--surface)] border border-[var(--border)] p-5 shadow-sm">
+              <Ring value={day.totalCalories} goal={day.dailyGoal} />
+              {/* PFC */}
+              <div className="mt-4 space-y-2.5">
+                {[
+                  { label: "たんぱく質 P", val: day.totalProtein, max: pfcMax.p, color: "#dc2626", unit: "g" },
+                  { label: "脂質 F", val: day.totalFat, max: pfcMax.f, color: "#f59e0b", unit: "g" },
+                  { label: "炭水化物 C", val: day.totalCarbs, max: pfcMax.c, color: "#15803d", unit: "g" },
+                ].map(row => (
+                  <div key={row.label} className="flex items-center gap-3">
+                    <span className="w-24 shrink-0 text-xs font-bold">{row.label}</span>
+                    <div className="flex-1 h-2.5 rounded-full bg-[var(--border)] overflow-hidden"><div className="h-full rounded-full" style={{ width: `${Math.min(100, (row.val / row.max) * 100)}%`, background: row.color }} /></div>
+                    <span className="w-20 text-right text-xs text-[var(--dim)]">{row.val}{row.unit} / {row.max}{row.unit}</span>
+                  </div>
+                ))}
+                <p className="text-[11px] text-[var(--dim)]">※ PFCの目安は一般的な参考値です。記録がない項目は0として表示しています。</p>
+              </div>
+              <button onClick={() => { setGoalInput(String(day.dailyGoal)); setShowGoal(v => !v); }} className="mt-3 w-full text-center text-xs font-bold text-[var(--accent)] py-2">目標カロリーを変更する（現在 {day.dailyGoal.toLocaleString()} kcal）</button>
+              {showGoal && (
+                <div className="flex gap-2 mt-1">
+                  <input aria-label="目標カロリー" type="number" inputMode="numeric" value={goalInput} onChange={e => setGoalInput(e.target.value)} className="flex-1 rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2.5 text-sm" placeholder="例：2000" />
+                  <button disabled={!goalInput || Number(goalInput) < 500} onClick={() => goalMut.mutate()} className="rounded-xl bg-[var(--accent)] text-white px-4 py-2.5 text-sm font-bold disabled:opacity-40">保存</button>
+                </div>
+              )}
+            </section>
+
+            {/* Add buttons */}
+            <div className="grid grid-cols-3 gap-2 mt-4">
+              <button onClick={() => { resetForm(); setShowForm(v => !v); }} className="rounded-2xl bg-[var(--accent)] text-white py-3.5 font-display font-black shadow text-sm">＋ 食事を記録</button>
+              <button onClick={() => setShowQuick(v => !v)} className="rounded-2xl bg-[var(--surface)] border border-[var(--border)] py-3.5 font-display font-black shadow-sm text-sm">🍱 よくある食品</button>
+              <button onClick={() => setShowMasters(v => !v)} className="rounded-2xl bg-[var(--surface)] border border-[var(--border)] py-3.5 font-display font-black shadow-sm text-sm">📚 マスター{day.masters.length > 0 ? `（${day.masters.length}）` : ""}</button>
+            </div>
+
+            {/* クイック追加（よくある食品・マスター・履歴チップ）で使う割合 */}
+            <section className="mt-3 rounded-2xl bg-[var(--surface)] border border-[var(--border)] p-3">
+              <PortionSelector label="クイック追加の割合（1食分が基準）" value={instantPortion} onChange={setInstantPortion} />
+              <p className="text-[11px] text-[var(--dim)] mt-2">「よくある食品」「マスター」「最近の履歴」からタップで追加するときは、この割合でカロリー・PFCが換算されます。既定は1食分です。</p>
+            </section>
+
+            {showQuick && (
+              <section className="mt-3 rounded-2xl bg-[var(--surface)] border border-[var(--border)] p-3">
+                <div className="flex gap-1.5 mb-3 flex-wrap">
+                  {(Object.keys(MEAL_LABEL) as MealType[]).map(t => (
+                    <button key={t} onClick={() => setMealType(t)} className={`px-3 py-1.5 rounded-full text-xs font-bold border ${mealType === t ? "bg-[var(--accent)] text-white border-transparent" : "border-[var(--border)]"}`}>{MEAL_LABEL[t].emoji} {MEAL_LABEL[t].label}に追加</button>
+                  ))}
+                </div>
+                <p className="text-xs font-bold mb-2">割合：{portionLabel(instantPortion)}{instantPortion !== 1 ? `（表示は換算後のカロリー）` : ""}</p>
+                <div className="grid sm:grid-cols-2 gap-1.5">
+                  {QUICK_FOODS.map(f => (
+                    <button key={f.name} onClick={() => addQuick(f, mealType)} className="flex justify-between items-center text-left rounded-xl bg-[var(--surface2)] px-3 py-2.5 hover:opacity-80">
+                      <span className="text-[13px] font-medium leading-snug pr-2">{f.name}</span>
+                      <span className="text-[13px] font-black whitespace-nowrap">{scaleKcal(f.kcal, instantPortion)}<span className="text-[10px] font-normal text-[var(--dim)]"> kcal{instantPortion !== 1 ? `（1食分 ${f.kcal}）` : ""}</span></span>
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[11px] text-[var(--dim)] mt-2">カロリー・PFCは一般的な目安です。タップすると選択中の区分で{formatJa(date)}に記録され、マスターにも自動登録されます。</p>
+              </section>
+            )}
+
+            {showMasters && (
+              <section className="mt-3 rounded-2xl bg-[var(--surface)] border border-[var(--border)] p-3">
+                <div className="flex gap-1.5 mb-3 flex-wrap">
+                  {(Object.keys(MEAL_LABEL) as MealType[]).map(t => (
+                    <button key={t} onClick={() => setMealType(t)} className={`px-3 py-1.5 rounded-full text-xs font-bold border ${mealType === t ? "bg-[var(--accent)] text-white border-transparent" : "border-[var(--border)]"}`}>{MEAL_LABEL[t].emoji} {MEAL_LABEL[t].label}に追加</button>
+                  ))}
+                </div>
+                <input aria-label="マスター食品を検索" value={masterQuery} onChange={e => setMasterQuery(e.target.value)} placeholder="マスター食品を検索…" className="w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2.5 text-sm mb-2" />
+                {day.masters.length === 0 ? (
+                  <p className="text-xs text-[var(--dim)] py-3 text-center">まだマスター食品がありません。食事を記録すると自動で登録されます（重複・よく似た名前は登録されません）。</p>
+                ) : filteredMasters.length === 0 ? (
+                  <p className="text-xs text-[var(--dim)] py-3 text-center">「{masterQuery}」に一致するマスター食品はありません。</p>
+                ) : (
+                  <div className="divide-y divide-[var(--border)]">
+                    {filteredMasters.map(m => (
+                      <div key={m.id} className="flex items-center gap-2 py-2">
+                        <button onClick={() => addMaster(m, mealType)} className="flex-1 min-w-0 text-left">
+                          <span className="block text-[13px] font-bold truncate">{m.name}</span>
+                          <span className="block text-[11px] text-[var(--dim)]">{instantPortion !== 1 ? `${scaleKcal(m.calories, instantPortion)} kcal（${portionLabel(instantPortion)}／1食分 ${m.calories} kcal）` : `${m.calories} kcal`}{ m.useCount > 1 ? ` ・ ${m.useCount}回記録` : ""} ・ 最終 {MEAL_LABEL[m.lastMealType].label}</span>
+                        </button>
+                        <button aria-label={`${m.name}をマスターから削除`} onClick={() => { if (confirmDelMaster === m.id) { delMasterMut.mutate(m.id); setConfirmDelMaster(null); } else { setConfirmDelMaster(m.id); setTimeout(() => setConfirmDelMaster(null), 3000); } }} className={`text-xs font-bold px-2 py-1.5 rounded shrink-0 ${confirmDelMaster === m.id ? "bg-red-500 text-white" : "text-red-500"}`}>{confirmDelMaster === m.id ? "本当に削除" : "削除"}</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <p className="text-[11px] text-[var(--dim)] mt-2">一度入力した食品は自動でマスターに登録されます。名前が完全に同じものや、数量違いなど「同じ食品と思われるもの」は重複登録されません。タップで選択中の区分に追加できます。</p>
+              </section>
+            )}
+
+            {/* Form */}
+            {showForm && (
+              <section className="mt-3 rounded-2xl bg-[var(--surface)] border-2 border-[var(--accent)] p-4">
+                <h2 className="font-display font-black">{editing ? "記録を編集" : "食事を記録"}</h2>
+                <div className="flex gap-1.5 mt-3 flex-wrap">
+                  {(Object.keys(MEAL_LABEL) as MealType[]).map(t => (
+                    <button key={t} onClick={() => setMealType(t)} className={`px-3 py-2 rounded-full text-sm font-bold border ${mealType === t ? "bg-[var(--accent)] text-white border-transparent" : "border-[var(--border)]"}`}>{MEAL_LABEL[t].emoji} {MEAL_LABEL[t].label}</button>
+                  ))}
+                </div>
+                <div className="mt-3">
+                  <PortionSelector label="食べた割合（既定は1食分）" value={portion} onChange={setPortion} />
+                </div>
+                {/* 選択中の時間帯の直近履歴（最大3件） */}
+                {!editing && day.recentByType[mealType].length > 0 && (
+                  <div className="mt-3">
+                    <div className="text-xs font-bold text-[var(--dim)]">{MEAL_LABEL[mealType].label}の最近の履歴から選ぶ</div>
+                    <div className="flex gap-1.5 mt-1.5 flex-wrap">
+                      {day.recentByType[mealType].map(item => (
+                        <button key={item.name} onClick={() => applySuggestion(item)} className="rounded-full bg-[var(--surface2)] border border-[var(--border)] px-3 py-2 text-left">
+                          <span className="block text-[13px] font-bold leading-tight">{item.name}</span>
+                          <span className="block text-[11px] text-[var(--dim)]">1食分 {item.calories} kcal ・ {formatJa(item.lastDate)}{item.lastPortion !== 1 ? ` ・ 前回 ${portionLabel(item.lastPortion)}` : ""}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <label className="block mt-3 text-xs font-bold text-[var(--dim)]" htmlFor="food-name">食品名 *</label>
+                <div className="relative">
+                  <input id="food-name" value={name} onChange={e => { setName(e.target.value); setSuggestOpen(true); }} onFocus={() => setSuggestOpen(true)} placeholder="例：鶏の照り焼き定食" className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2.5 text-sm" autoComplete="off" />
+                  {suggestOpen && !editing && suggestions.length > 0 && name.trim().length > 0 && (
+                    <div className="absolute left-0 right-0 top-full z-20 mt-1 rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-lg overflow-hidden">
+                      {suggestions.map(s => (
+                        <button key={`${s.source}-${s.name}`} onClick={() => applySuggestion(s)} className="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left hover:bg-[var(--surface2)]">
+                          <span className="min-w-0">
+                            <span className="block text-sm font-bold truncate">{s.name}</span>
+                            <span className="block text-[11px] text-[var(--dim)]">{s.source === "master" ? "📚 マスター登録済み" : "🕘 過去の記録"}</span>
+                          </span>
+                          <span className="text-sm font-black whitespace-nowrap">{s.calories}<span className="text-[10px] font-normal text-[var(--dim)]"> kcal</span></span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <label className="block mt-3 text-xs font-bold text-[var(--dim)]" htmlFor="food-cal">カロリー（kcal）* ― 1食分の値</label>
+                <input id="food-cal" type="number" inputMode="numeric" value={calories} onChange={e => setCalories(e.target.value)} placeholder="例：650" className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2.5 text-sm" />
+                <div className="grid grid-cols-3 gap-2 mt-3">
+                  <div><label className="text-xs font-bold text-[var(--dim)]" htmlFor="f-p">たんぱく質 g（1食分）</label><input id="f-p" type="number" inputMode="decimal" value={protein} onChange={e => setProtein(e.target.value)} placeholder="任意" className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-2 py-2.5 text-sm" /></div>
+                  <div><label className="text-xs font-bold text-[var(--dim)]" htmlFor="f-f">脂質 g（1食分）</label><input id="f-f" type="number" inputMode="decimal" value={fat} onChange={e => setFat(e.target.value)} placeholder="任意" className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-2 py-2.5 text-sm" /></div>
+                  <div><label className="text-xs font-bold text-[var(--dim)]" htmlFor="f-c">炭水化物 g（1食分）</label><input id="f-c" type="number" inputMode="decimal" value={carbs} onChange={e => setCarbs(e.target.value)} placeholder="任意" className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-2 py-2.5 text-sm" /></div>
+                </div>
+                {calories && !Number.isNaN(Number(calories)) && (
+                  <p className="mt-3 rounded-xl bg-[var(--surface2)] px-3 py-2.5 text-sm font-bold" aria-live="polite">
+                    {portion === 1
+                      ? `記録される量：1食分 ＝ ${scaleKcal(Number(calories), 1).toLocaleString()} kcal`
+                      : `記録される量：${portionLabel(portion)} ＝ ${scaleKcal(Number(calories), portion).toLocaleString()} kcal（1食分 ${Number(calories).toLocaleString()} kcal × ${portion}）`}
+                    {portion !== 1 && (protein || fat || carbs) ? <span className="block text-[11px] font-normal text-[var(--dim)] mt-0.5">P {protein ? scaleMacro(Number(protein), portion) : "—"}g ・ F {fat ? scaleMacro(Number(fat), portion) : "—"}g ・ C {carbs ? scaleMacro(Number(carbs), portion) : "—"}g で記録されます</span> : null}
+                  </p>
+                )}
+                {(addMut.error || editMut.error) && <p className="text-xs text-red-600 mt-2">保存できませんでした。入力を確認してください。</p>}
+                <div className="flex gap-2 mt-4">
+                  <button disabled={!name.trim() || !calories || Number(calories) < 0 || addMut.isPending || editMut.isPending} onClick={() => editing ? editMut.mutate() : addMut.mutate({ name: name.trim(), calories: Number(calories), protein: protein ? Number(protein) : null, fat: fat ? Number(fat) : null, carbs: carbs ? Number(carbs) : null, mealType, portion }, { onSuccess: resetForm })} className="flex-1 rounded-xl bg-[var(--accent)] text-white py-3 font-bold disabled:opacity-40">{editing ? "更新する" : "記録する"}</button>
+                  <button onClick={resetForm} className="rounded-xl border border-[var(--border)] px-4 py-3 text-sm font-bold">キャンセル</button>
+                </div>
+                {!editing && <p className="text-[11px] text-[var(--dim)] mt-2">記録するとマスター食品に自動登録されます（重複・よく似た名前は登録されません）。</p>}
+              </section>
+            )}
+
+            {/* Meals grouped */}
+            <section className="mt-5 space-y-4">
+              {(Object.keys(MEAL_LABEL) as MealType[]).map(t => {
+                const list = grouped[t];
+                const subtotal = list.reduce((s, m) => s + m.calories, 0);
+                const recents = day.recentByType[t];
+                return (
+                  <div key={t}>
+                    <div className="flex items-baseline justify-between px-1">
+                      <h3 className="font-display font-black">{MEAL_LABEL[t].emoji} {MEAL_LABEL[t].label}</h3>
+                      <span className="text-xs font-bold text-[var(--dim)]">{list.length ? `${subtotal.toLocaleString()} kcal` : "未記録"}</span>
+                    </div>
+                    {recents.length > 0 && (
+                      <div className="mt-1.5 flex gap-1.5 overflow-x-auto pb-1 px-0.5" aria-label={`${MEAL_LABEL[t].label}の最近の履歴`}>
+                        {recents.map(item => {
+                          const pending = addMut.isPending && addMut.variables?.name === item.name && addMut.variables?.mealType === t && addMut.variables?.portion === instantPortion;
+                          return (
+                            <button key={item.name} disabled={pending} onClick={() => addRecent(item, t)} className="shrink-0 rounded-full bg-[var(--surface)] border border-[var(--border)] px-3 py-1.5 text-left shadow-sm disabled:opacity-50">
+                              <span className="text-xs font-bold">＋ {item.name}</span>
+                              <span className="text-[11px] text-[var(--dim)]"> {scaleKcal(item.calories, instantPortion)}kcal{instantPortion !== 1 ? `（${portionLabel(instantPortion)}）` : ""}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {list.length === 0 ? (
+                      <div className="mt-1.5 rounded-2xl border border-dashed border-[var(--border)] py-3 text-center text-xs text-[var(--dim)]">まだ記録がありません</div>
+                    ) : (
+                      <div className="mt-1.5 rounded-2xl bg-[var(--surface)] border border-[var(--border)] divide-y divide-[var(--border)] overflow-hidden">
+                        {list.map(m => (
+                          <div key={m.id} className="flex items-center gap-2 px-3.5 py-3">
+                            <div className="flex-1 min-w-0">
+                              <div className="text-sm font-bold truncate">{m.name}{(m.portion ?? 1) !== 1 && <span className="ml-1.5 align-middle rounded-full bg-[var(--surface2)] border border-[var(--border)] px-1.5 py-0.5 text-[10px] font-bold text-[var(--accent)]">{portionLabel(m.portion ?? 1)}</span>}</div>
+                              {(m.protein != null || m.fat != null || m.carbs != null) && <div className="text-[11px] text-[var(--dim)]">P {m.protein ?? "—"}g ・ F {m.fat ?? "—"}g ・ C {m.carbs ?? "—"}g</div>}
+                            </div>
+                            <span className="font-display font-black whitespace-nowrap">{m.calories.toLocaleString()}<span className="text-[10px] font-normal text-[var(--dim)]"> kcal</span></span>
+                            <button aria-label={`${m.name}を編集`} onClick={() => startEdit(m)} className="text-xs font-bold text-[var(--accent)] px-1.5 py-1">編集</button>
+                            <button aria-label={`${m.name}を削除`} onClick={() => { if (confirmDel === m.id) { delMut.mutate(m.id); setConfirmDel(null); } else { setConfirmDel(m.id); setTimeout(() => setConfirmDel(null), 3000); } }} className={`text-xs font-bold px-1.5 py-1 rounded ${confirmDel === m.id ? "bg-red-500 text-white" : "text-red-500"}`}>{confirmDel === m.id ? "本当に削除" : "削除"}</button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </section>
+
+            {/* History chart */}
+            <section className="mt-6 rounded-[24px] bg-[var(--surface)] border border-[var(--border)] p-4">
+              <h3 className="font-display font-black">直近14日間の推移</h3>
+              <div className="mt-3 flex items-end gap-1 h-32">
+                {day.days.map(d => {
+                  const max = Math.max(day.dailyGoal * 1.2, ...day.days.map(x => x.total), 1);
+                  const h = Math.max(2, (d.total / max) * 100);
+                  const isSel = d.date === date;
+                  return (
+                    <button key={d.date} aria-label={`${d.date} ${d.total}kcal`} onClick={() => setDate(d.date)} className="flex-1 flex flex-col items-center gap-1 min-w-0">
+                      <span className="text-[9px] text-[var(--dim)]">{d.total > 0 ? d.total : ""}</span>
+                      <div className="w-full rounded-t-md" style={{ height: `${h}%`, minHeight: 3, background: isSel ? "var(--accent)" : d.total > day.dailyGoal ? "#dc2626" : "var(--accent2)", opacity: isSel ? 1 : 0.75 }} />
+                      <span className={`text-[9px] ${isSel ? "font-black text-[var(--accent)]" : "text-[var(--dim)]"}`}>{new Date(`${d.date}T12:00:00`).getDate()}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="mt-1 flex justify-between text-[11px] text-[var(--dim)]"><span>バーをタップするとその日を表示</span><span>目標 {day.dailyGoal.toLocaleString()} kcal</span></div>
+              {(() => {
+                const withData = day.days.filter(d => d.count > 0);
+                const avg = withData.length ? Math.round(withData.reduce((s, d) => s + d.total, 0) / withData.length) : 0;
+                return <p className="mt-2 text-xs font-bold">記録した日の平均：{avg ? `${avg.toLocaleString()} kcal` : "—"}（{withData.length}日分）</p>;
+              })()}
+            </section>
+
+            {/* Weight */}
+            <section className="mt-4 rounded-[24px] bg-[var(--surface)] border border-[var(--border)] p-4">
+              <div className="flex items-center justify-between">
+                <h3 className="font-display font-black">⚖️ 体重</h3>
+                <button onClick={() => setShowWeightForm(v => !v)} className="text-xs font-bold text-[var(--accent)]">＋ 今日の体重を記録</button>
+              </div>
+              {showWeightForm && (
+                <div className="flex gap-2 mt-3">
+                  <input aria-label="体重 kg" type="number" inputMode="decimal" step="0.1" value={weightInput} onChange={e => setWeightInput(e.target.value)} placeholder="例：65.5" className="flex-1 rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2.5 text-sm" />
+                  <span className="self-center text-sm text-[var(--dim)]">kg</span>
+                  <button disabled={!weightInput} onClick={() => weightMut.mutate()} className="rounded-xl bg-[var(--accent2)] text-white px-4 py-2.5 text-sm font-bold disabled:opacity-40">記録</button>
+                </div>
+              )}
+              {day.weights.length > 0 ? (
+                <>
+                  <div className="mt-3 flex items-baseline gap-2">
+                    <span className="font-display text-3xl font-black">{day.weights[0]!.weight}</span><span className="text-sm text-[var(--dim)]">kg（最新：{formatJa(day.weights[0]!.date)}）</span>
+                    {day.weights.length > 1 && (() => { const diff = Math.round((day.weights[0]!.weight - day.weights[day.weights.length - 1]!.weight) * 10) / 10; return <span className={`text-xs font-bold ${diff > 0 ? "text-red-500" : diff < 0 ? "text-[var(--accent2)]" : "text-[var(--dim)]"}`}>{diff > 0 ? `+${diff}` : diff} kg（最古の記録比）</span>; })()}
+                  </div>
+                  <div className="mt-2 divide-y divide-[var(--border)]">
+                    {day.weights.slice(0, 7).map(w => (
+                      <div key={w.id} className="flex items-center py-2 text-sm"><span className="flex-1 text-[var(--dim)] text-xs">{formatJa(w.date)}</span><span className="font-bold">{w.weight} kg</span><button aria-label={`${w.date}の体重を削除`} onClick={() => delWeightMut.mutate(w.id)} className="ml-2 text-xs text-red-500 font-bold">削除</button></div>
+                    ))}
+                  </div>
+                </>
+              ) : <p className="mt-2 text-xs text-[var(--dim)]">まだ体重の記録がありません。体重を記録するとここに推移が表示されます。</p>}
+            </section>
+
+            <p className="mt-6 text-center text-[11px] leading-relaxed text-[var(--dim)]">食品のカロリーは目安です。体調や健康に関する判断は、必要に応じて専門家にご相談ください。</p>
+          </>
+        )}
+      </main>
+    </div>
+  );
+}
