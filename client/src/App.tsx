@@ -101,6 +101,45 @@ function PortionSelector({ value, onChange, label }: { value: number; onChange: 
   );
 }
 
+// 写真を長辺1024pxのJPEGに縮小して base64 化する（送信量と解析速度のため）
+async function preparePhoto(file: File): Promise<{ base64: string; preview: string }> {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error("image load failed"));
+      el.src = url;
+    });
+    const maxSide = 1024;
+    const scale = Math.min(1, maxSide / Math.max(img.naturalWidth || 1, img.naturalHeight || 1));
+    const w = Math.max(1, Math.round((img.naturalWidth || 1) * scale));
+    const h = Math.max(1, Math.round((img.naturalHeight || 1) * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx2d = canvas.getContext("2d");
+    if (!ctx2d) throw new Error("canvas unavailable");
+    ctx2d.drawImage(img, 0, 0, w, h);
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.82);
+    const base64 = dataUrl.split(",")[1] ?? "";
+    if (!base64) throw new Error("encode failed");
+    return { base64, preview: dataUrl };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+type PhotoItem = {
+  key: number;
+  name: string;
+  calories: string;
+  protein: string;
+  fat: string;
+  carbs: string;
+  selected: boolean;
+};
+
 function toKey(d: Date) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
@@ -148,6 +187,16 @@ export function App() {
   const qc = useQueryClient();
   const [date, setDate] = useState(todayKey());
   const [showForm, setShowForm] = useState(false);
+  const [showPhoto, setShowPhoto] = useState(false);
+  const [photoPreview, setPhotoPreview] = useState<string | null>(null);
+  const [photoItems, setPhotoItems] = useState<PhotoItem[] | null>(null);
+  const [photoDescription, setPhotoDescription] = useState("");
+  const [photoError, setPhotoError] = useState("");
+  const [photoNotFood, setPhotoNotFood] = useState(false);
+  const [photoPortion, setPhotoPortion] = useState(1);
+  const [photoSaving, setPhotoSaving] = useState(false);
+  const cameraInputRef = useRef<HTMLInputElement | null>(null);
+  const galleryInputRef = useRef<HTMLInputElement | null>(null);
   const [editing, setEditing] = useState<Meal | null>(null);
   const [showGoal, setShowGoal] = useState(false);
   const [showQuick, setShowQuick] = useState(false);
@@ -261,6 +310,83 @@ export function App() {
     onError: (_e, _v, ctx) => { if (ctx?.prev) qc.setQueryData(["bundle", date], ctx.prev); },
     onSettled: invalidate,
   });
+
+  const photoMut = useMutation({
+    mutationFn: (v: { base64: string }) => api.analyzeFoodPhoto({ imageBase64: v.base64, mimeType: "image/jpeg", mealType }),
+    onSuccess: (res) => {
+      if (!res.ok) {
+        setPhotoError(res.error ?? "写真を解析できませんでした。撮り直してください。");
+        setPhotoItems(null);
+        return;
+      }
+      if (!res.isFood || res.items.length === 0) {
+        setPhotoNotFood(true);
+        setPhotoDescription(res.description);
+        setPhotoItems(null);
+        return;
+      }
+      setPhotoDescription(res.description);
+      setPhotoItems(res.items.map((it, i) => ({
+        key: i,
+        name: it.name,
+        calories: String(it.calories),
+        protein: it.protein != null ? String(it.protein) : "",
+        fat: it.fat != null ? String(it.fat) : "",
+        carbs: it.carbs != null ? String(it.carbs) : "",
+        selected: true,
+      })));
+    },
+    onError: () => { setPhotoError("写真を解析できませんでした。通信状態を確認して、もう一度お試しください。"); setPhotoItems(null); },
+  });
+
+  async function handlePhotoFile(file: File) {
+    setPhotoError("");
+    setPhotoNotFood(false);
+    setPhotoItems(null);
+    setPhotoDescription("");
+    try {
+      const { base64, preview } = await preparePhoto(file);
+      setPhotoPreview(preview);
+      photoMut.mutate({ base64 });
+    } catch {
+      setPhotoError("写真を読み込めませんでした。別の写真でお試しください。");
+    }
+  }
+
+  function resetPhoto() {
+    setPhotoPreview(null);
+    setPhotoItems(null);
+    setPhotoDescription("");
+    setPhotoError("");
+    setPhotoNotFood(false);
+    setPhotoPortion(1);
+  }
+
+  async function savePhotoItems() {
+    if (!photoItems) return;
+    const targets = photoItems.filter(it => it.selected && it.name.trim() && it.calories !== "" && !Number.isNaN(Number(it.calories)) && Number(it.calories) >= 0);
+    if (targets.length === 0) return;
+    setPhotoSaving(true);
+    try {
+      for (const it of targets) {
+        await addMut.mutateAsync({
+          name: it.name.trim(),
+          calories: Number(it.calories),
+          protein: it.protein ? Number(it.protein) : null,
+          fat: it.fat ? Number(it.fat) : null,
+          carbs: it.carbs ? Number(it.carbs) : null,
+          mealType,
+          portion: photoPortion,
+        });
+      }
+      resetPhoto();
+      setShowPhoto(false);
+    } catch {
+      setPhotoError("一部の項目を記録できませんでした。記録済みの項目は下の一覧で確認してください。");
+    } finally {
+      setPhotoSaving(false);
+    }
+  }
 
   const editMut = useMutation({
     mutationFn: () => api.updateMeal({ id: editing!.id, name: name.trim(), calories: Number(calories), protein: protein ? Number(protein) : null, fat: fat ? Number(fat) : null, carbs: carbs ? Number(carbs) : null, mealType, portion }),
@@ -581,11 +707,93 @@ export function App() {
             </section>
 
             {/* Add buttons */}
-            <div className="grid grid-cols-3 gap-2 mt-4">
+            <div className="grid grid-cols-2 gap-2 mt-4">
               <button onClick={() => { resetForm(); setShowForm(v => !v); }} className="rounded-2xl bg-[var(--accent)] text-white py-3.5 font-display font-black shadow text-sm">＋ 食事を記録</button>
+              <button aria-expanded={showPhoto} onClick={() => setShowPhoto(v => !v)} className="rounded-2xl bg-[var(--accent2)] text-white py-3.5 font-display font-black shadow text-sm">📸 写真で記録</button>
               <button onClick={() => setShowQuick(v => !v)} className="rounded-2xl bg-[var(--surface)] border border-[var(--border)] py-3.5 font-display font-black shadow-sm text-sm">🍱 よくある食品</button>
               <button onClick={() => setShowMasters(v => !v)} className="rounded-2xl bg-[var(--surface)] border border-[var(--border)] py-3.5 font-display font-black shadow-sm text-sm">📚 マスター{day.masters.length > 0 ? `（${day.masters.length}）` : ""}</button>
             </div>
+
+            {showPhoto && (
+              <section className="mt-3 rounded-2xl bg-[var(--surface)] border-2 border-[var(--accent2)] p-4">
+                <h2 className="font-display font-black">📸 写真から記録</h2>
+                <p className="text-[11px] text-[var(--dim)] mt-1 leading-relaxed">食事の写真を選ぶと、AIが料理ごとにカロリーとPFCを推定します。推定値は目安なので、内容を確認・修正してから記録してください。写真は解析のためだけに使われ、保存されません。</p>
+                <input ref={cameraInputRef} type="file" accept="image/*" capture="environment" className="hidden" aria-label="カメラで撮影する" onChange={e => { const f = e.target.files?.[0]; e.target.value = ""; if (f) void handlePhotoFile(f); }} />
+                <input ref={galleryInputRef} type="file" accept="image/*" className="hidden" aria-label="写真アルバムから選ぶ" onChange={e => { const f = e.target.files?.[0]; e.target.value = ""; if (f) void handlePhotoFile(f); }} />
+                <div className="flex gap-1.5 mt-3 flex-wrap" role="group" aria-label="写真の食事区分">
+                  {(Object.keys(MEAL_LABEL) as MealType[]).map(t => (
+                    <button key={t} onClick={() => setMealType(t)} className={`px-3 py-2 rounded-full text-sm font-bold border ${mealType === t ? "bg-[var(--accent2)] text-white border-transparent" : "border-[var(--border)]"}`}>{MEAL_LABEL[t].emoji} {MEAL_LABEL[t].label}</button>
+                  ))}
+                </div>
+                {!photoPreview && (
+                  <div className="grid grid-cols-2 gap-2 mt-3">
+                    <button onClick={() => cameraInputRef.current?.click()} className="rounded-2xl bg-[var(--accent2)] text-white py-4 font-display font-black text-sm">📷 撮影する</button>
+                    <button onClick={() => galleryInputRef.current?.click()} className="rounded-2xl bg-[var(--surface2)] border border-[var(--border)] py-4 font-display font-black text-sm">🖼 写真を選ぶ</button>
+                  </div>
+                )}
+                {photoPreview && (
+                  <div className="mt-3">
+                    <img src={photoPreview} alt="解析する食事の写真" className="w-full max-h-60 object-cover rounded-2xl border border-[var(--border)]" />
+                    <div className="flex gap-2 mt-2">
+                      <button disabled={photoMut.isPending || photoSaving} onClick={() => cameraInputRef.current?.click()} className="flex-1 rounded-xl border border-[var(--border)] py-2.5 text-sm font-bold disabled:opacity-40">📷 撮り直す</button>
+                      <button disabled={photoMut.isPending || photoSaving} onClick={() => galleryInputRef.current?.click()} className="flex-1 rounded-xl border border-[var(--border)] py-2.5 text-sm font-bold disabled:opacity-40">🖼 選び直す</button>
+                    </div>
+                  </div>
+                )}
+                {photoMut.isPending && <p aria-live="polite" className="mt-3 rounded-xl bg-[var(--surface2)] px-3 py-3 text-sm font-bold animate-pulse">AIが写真を解析中です…（10〜30秒ほどかかります）</p>}
+                {photoError && <p role="alert" className="mt-3 rounded-xl bg-red-50 border border-red-200 px-3 py-2.5 text-sm font-bold text-red-700 dark:bg-red-950 dark:border-red-800 dark:text-red-200">{photoError}</p>}
+                {photoNotFood && !photoMut.isPending && (
+                  <p aria-live="polite" className="mt-3 rounded-xl bg-[var(--surface2)] px-3 py-2.5 text-sm font-bold">食べ物が写っていないようです。料理全体が写る写真でもう一度お試しください。</p>
+                )}
+                {photoItems && !photoMut.isPending && (
+                  <div className="mt-3">
+                    {photoDescription && <p className="text-sm font-bold leading-relaxed">{photoDescription}</p>}
+                    <div className="mt-3">
+                      <PortionSelector label="食べた割合（すべての品目に適用）" value={photoPortion} onChange={setPhotoPortion} />
+                    </div>
+                    <div className="mt-3 space-y-2">
+                      {photoItems.map(it => (
+                        <div key={it.key} className={`rounded-2xl border p-3 ${it.selected ? "border-[var(--accent2)] bg-[var(--surface)]" : "border-[var(--border)] opacity-60"}`}>
+                          <div className="flex items-start gap-2">
+                            <input aria-label={`${it.name || "品目"}を記録対象にする`} type="checkbox" checked={it.selected} onChange={e => setPhotoItems(prev => prev ? prev.map(x => x.key === it.key ? { ...x, selected: e.target.checked } : x) : prev)} className="mt-2.5 w-5 h-5 shrink-0 accent-[#15803d]" />
+                            <div className="flex-1 min-w-0">
+                              <label className="block text-[11px] font-bold text-[var(--dim)]" htmlFor={`photo-name-${it.key}`}>品目名（1食分の推定）</label>
+                              <input id={`photo-name-${it.key}`} value={it.name} onChange={e => setPhotoItems(prev => prev ? prev.map(x => x.key === it.key ? { ...x, name: e.target.value } : x) : prev)} className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm font-bold" autoComplete="off" />
+                              <div className="grid grid-cols-4 gap-1.5 mt-2">
+                                <div><label className="block text-[10px] font-bold text-[var(--dim)]" htmlFor={`photo-cal-${it.key}`}>kcal</label><input id={`photo-cal-${it.key}`} type="number" inputMode="numeric" value={it.calories} onChange={e => setPhotoItems(prev => prev ? prev.map(x => x.key === it.key ? { ...x, calories: e.target.value } : x) : prev)} className="mt-0.5 w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-1.5 py-2 text-sm" /></div>
+                                <div><label className="block whitespace-nowrap text-[10px] font-bold text-[var(--dim)]" htmlFor={`photo-p-${it.key}`}>P g</label><input id={`photo-p-${it.key}`} type="number" inputMode="decimal" value={it.protein} onChange={e => setPhotoItems(prev => prev ? prev.map(x => x.key === it.key ? { ...x, protein: e.target.value } : x) : prev)} placeholder="—" className="mt-0.5 w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-1.5 py-2 text-sm" /></div>
+                                <div><label className="block whitespace-nowrap text-[10px] font-bold text-[var(--dim)]" htmlFor={`photo-f-${it.key}`}>F g</label><input id={`photo-f-${it.key}`} type="number" inputMode="decimal" value={it.fat} onChange={e => setPhotoItems(prev => prev ? prev.map(x => x.key === it.key ? { ...x, fat: e.target.value } : x) : prev)} placeholder="—" className="mt-0.5 w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-1.5 py-2 text-sm" /></div>
+                                <div><label className="block whitespace-nowrap text-[10px] font-bold text-[var(--dim)]" htmlFor={`photo-c-${it.key}`}>C g</label><input id={`photo-c-${it.key}`} type="number" inputMode="decimal" value={it.carbs} onChange={e => setPhotoItems(prev => prev ? prev.map(x => x.key === it.key ? { ...x, carbs: e.target.value } : x) : prev)} placeholder="—" className="mt-0.5 w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-1.5 py-2 text-sm" /></div>
+                              </div>
+                              {it.selected && it.calories !== "" && !Number.isNaN(Number(it.calories)) && photoPortion !== 1 && (
+                                <p className="text-[11px] text-[var(--dim)] mt-1.5">記録される量：{portionLabel(photoPortion)} ＝ {scaleKcal(Number(it.calories), photoPortion).toLocaleString()} kcal</p>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    {(() => {
+                      const targets = photoItems.filter(x => x.selected && x.calories !== "" && !Number.isNaN(Number(x.calories)));
+                      const total = targets.reduce((s, x) => s + scaleKcal(Number(x.calories), photoPortion), 0);
+                      return (
+                        <>
+                          <p className="mt-3 text-sm font-bold" aria-live="polite">選択中 {targets.length}件 ・ 合計 {total.toLocaleString()} kcal{photoPortion !== 1 ? `（${portionLabel(photoPortion)}で換算）` : ""}を{MEAL_LABEL[mealType].label}に記録します</p>
+                          <div className="flex gap-2 mt-3">
+                            <button disabled={targets.length === 0 || photoSaving} onClick={() => void savePhotoItems()} className="flex-1 rounded-xl bg-[var(--accent2)] text-white py-3 font-bold disabled:opacity-40">{photoSaving ? "記録中…" : `選択した${targets.length}件を記録する`}</button>
+                            <button disabled={photoSaving} onClick={() => { resetPhoto(); setShowPhoto(false); }} className="rounded-xl border border-[var(--border)] px-4 py-3 text-sm font-bold disabled:opacity-40">キャンセル</button>
+                          </div>
+                          <p className="text-[11px] text-[var(--dim)] mt-2">記録するとマスター食品にも自動登録されます（重複・よく似た名前は登録されません）。</p>
+                        </>
+                      );
+                    })()}
+                  </div>
+                )}
+                {!photoItems && !photoMut.isPending && (
+                  <button onClick={() => { resetPhoto(); setShowPhoto(false); }} className="mt-3 w-full rounded-xl border border-[var(--border)] py-2.5 text-sm font-bold">閉じる</button>
+                )}
+              </section>
+            )}
             {/* クイック追加（よくある食品・マスター・履歴チップ）で使う割合 */}
             <section className="mt-3 rounded-2xl bg-[var(--surface)] border border-[var(--border)] p-3">
               <PortionSelector label="クイック追加の割合（1食分が基準）" value={instantPortion} onChange={setInstantPortion} />
@@ -647,6 +855,7 @@ export function App() {
             {showForm && (
               <section className="mt-3 rounded-2xl bg-[var(--surface)] border-2 border-[var(--accent)] p-4">
                 <h2 className="font-display font-black">{editing ? "記録を編集" : "食事を記録"}</h2>
+                {!editing && <button onClick={() => { resetForm(); setShowPhoto(true); window.scrollTo({ top: 0, behavior: "smooth" }); }} className="mt-2 text-xs font-bold text-[var(--accent2)] underline">📸 写真から推定して入力する</button>}
                 <div className="flex gap-1.5 mt-3 flex-wrap">
                   {(Object.keys(MEAL_LABEL) as MealType[]).map(t => (
                     <button key={t} onClick={() => setMealType(t)} className={`px-3 py-2 rounded-full text-sm font-bold border ${mealType === t ? "bg-[var(--accent)] text-white border-transparent" : "border-[var(--border)]"}`}>{MEAL_LABEL[t].emoji} {MEAL_LABEL[t].label}</button>

@@ -679,6 +679,74 @@ return { ok: true};
 },
 }),
 
+analyzeFoodPhoto: defineAction({
+description: "食事の写真をAIで解析し、写っている料理ごとに食品名・カロリー・PFCの推定値（1食分相当）を返します。記録はしません。",
+request: z.object({
+imageBase64: z.string().min(100).max(8000000),
+mimeType: z.enum(["image/jpeg", "image/png"]),
+mealType: mealTypeEnum.optional(),
+}),
+response: z.object({
+ok: z.boolean(),
+isFood: z.boolean(),
+description: z.string(),
+items: z.array(z.object({
+name: z.string(),
+calories: z.number(),
+protein: z.number().nullable(),
+fat: z.number().nullable(),
+carbs: z.number().nullable(),
+})),
+error: z.string().nullable(),
+}),
+async handler(ctx, args): Promise<{ ok: boolean; isFood: boolean; description: string; items: { name: string; calories: number; protein: number | null; fat: number | null; carbs: number | null }[]; error: string | null }> {
+const inferenceSchema = z.object({
+isFood: z.boolean(),
+description: z.string(),
+items: z.array(z.object({
+name: z.string(),
+calories: z.number(),
+protein: z.number().nullable(),
+fat: z.number().nullable(),
+carbs: z.number().nullable(),
+})),
+});
+try {
+const slotHint = args.mealType ? `この写真は「${{ breakfast: "朝食", lunch: "昼食", dinner: "夕食", snack: "間食" }[args.mealType]}」として記録される予定です。` : "";
+const result = await ctx.inference.complete(
+`あなたは日本の食事の栄養推定の専門家です。添付された食事の写真をよく見て、写っている料理・食品を品目ごとに分けて推定してください。${slotHint}
+
+ルール:
+- 食べ物・飲み物が写っていない場合は isFood を false にし、items は空にしてください。
+- items は写真に写っている品目ごと（例: ごはん、味噌汁、焼き魚、サラダ）に分けてください。定食も1品にまとめず分けてください。
+- name は日本語で、分量の目安を含めてください（例: 「ごはん（茶碗1杯）」「鶏の唐揚げ 4個」）。
+- calories はその品目の写っている量に対する推定カロリー（kcal、整数）。
+- protein / fat / carbs はその品目のたんぱく質・脂質・炭水化物（g、小数1桁まで）。推定できる場合は必ず数値を入れてください。
+- 写真から見える量・大きさ・一般的な日本の食事の分量を根拠に、現実的な値を推定してください。過度に丸い値ではなく、品目ごとに妥当な値を付けてください。
+- description には写真全体の概要を1〜2文で書いてください（例: 「鮭の塩焼き定食です。ごはん、味噌汁、小鉢が含まれます」）。`,
+{
+schema: inferenceSchema,
+images: [{ dataBase64: args.imageBase64, mimeType: args.mimeType, caption: "食事の写真" }],
+timeout_secs: 90,
+},
+);
+const items = result.items
+.filter(i => i.name.trim().length > 0)
+.slice(0, 10)
+.map(i => ({
+name: i.name.trim().slice(0, 100),
+calories: Math.max(0, Math.min(10000, Math.round(i.calories))),
+protein: i.protein == null ? null : Math.max(0, Math.min(1000, Math.round(i.protein * 10) / 10)),
+fat: i.fat == null ? null : Math.max(0, Math.min(1000, Math.round(i.fat * 10) / 10)),
+carbs: i.carbs == null ? null : Math.max(0, Math.min(1000, Math.round(i.carbs * 10) / 10)),
+}));
+return { ok: true, isFood: result.isFood, description: result.description ?? "", items: result.isFood ? items : [], error: null };
+} catch {
+return { ok: false, isFood: false, description: "", items: [], error: "写真を解析できませんでした。明るい場所で料理全体が写るように撮り直してください。" };
+}
+},
+}),
+
 // 既存の全食事履歴を走査してマスターへ一括登録（重複・類似はスキップ）。移行・修復用。
 backfillMasters: defineAction({
 description: "過去の食事記録すべてからマスター食品を一括登録します（重複・類似は登録しません）。",
