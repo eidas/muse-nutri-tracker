@@ -153,6 +153,21 @@ export function App() {
   const [showQuick, setShowQuick] = useState(false);
   const [showMasters, setShowMasters] = useState(false);
   const [showWeightForm, setShowWeightForm] = useState(false);
+  const [view, setView] = useState<"main" | "masters">("main");
+  // マスター管理画面用
+  const [manageQuery, setManageQuery] = useState("");
+  const [manageSort, setManageSort] = useState<"freq" | "recent" | "name" | "kcal">("freq");
+  const [manageFilterType, setManageFilterType] = useState<MealType | "all">("all");
+  const [editingMaster, setEditingMaster] = useState<Master | null>(null);
+  const [showMasterForm, setShowMasterForm] = useState(false);
+  const [mName, setMName] = useState("");
+  const [mCalories, setMCalories] = useState("");
+  const [mProtein, setMProtein] = useState("");
+  const [mFat, setMFat] = useState("");
+  const [mCarbs, setMCarbs] = useState("");
+  const [mMealType, setMMealType] = useState<MealType>("lunch");
+  const [masterFormError, setMasterFormError] = useState("");
+  const [masterToast, setMasterToast] = useState("");
 
   // form state
   const [name, setName] = useState("");
@@ -182,6 +197,13 @@ export function App() {
   });
   const day = bundleQ.data;
 
+  const mastersQ = useQuery({
+    queryKey: ["masters"],
+    queryFn: () => api.getMasters({}),
+    enabled: view === "masters",
+    staleTime: 10_000,
+  });
+
   // 入力候補は少し遅らせて検索（タイプ中のリクエストを減らす）
   useEffect(() => {
     const t = setTimeout(() => setDebouncedName(name), 200);
@@ -194,7 +216,7 @@ export function App() {
     staleTime: 60_000,
   });
 
-  const invalidate = () => { qc.invalidateQueries({ queryKey: ["bundle"] }); };
+  const invalidate = () => { qc.invalidateQueries({ queryKey: ["bundle"] }); qc.invalidateQueries({ queryKey: ["masters"] }); };
 
   // 既存の履歴があるのにマスターが空なら一度だけ自動で一括登録
   const backfillMut = useMutation({
@@ -282,7 +304,31 @@ export function App() {
     onSettled: invalidate,
   });
   const delWeightMut = useMutation({ mutationFn: (id: number) => api.deleteWeight({ id }), onSuccess: invalidate });
-  const delMasterMut = useMutation({ mutationFn: (id: number) => api.deleteMaster({ id }), onSuccess: invalidate });
+  const delMasterMut = useMutation({
+    mutationFn: (id: number) => api.deleteMaster({ id }),
+    onSuccess: () => { invalidate(); setMasterToast("マスターを削除しました"); setTimeout(() => setMasterToast(""), 2500); },
+  });
+  const createMasterMut = useMutation({
+    mutationFn: () => api.createMaster({ name: mName.trim(), calories: Number(mCalories), protein: mProtein ? Number(mProtein) : null, fat: mFat ? Number(mFat) : null, carbs: mCarbs ? Number(mCarbs) : null, mealType: mMealType }),
+    onSuccess: (res) => {
+      if (!res.ok) { setMasterFormError(res.error ?? "登録できませんでした"); return; }
+      setMasterFormError(""); setShowMasterForm(false); setEditingMaster(null); invalidate(); setMasterToast("マスターを追加しました"); setTimeout(() => setMasterToast(""), 2500);
+    },
+    onError: () => setMasterFormError("保存できませんでした。入力を確認してください。"),
+  });
+  const updateMasterMut = useMutation({
+    mutationFn: () => api.updateMaster({ id: editingMaster!.id, name: mName.trim(), calories: Number(mCalories), protein: mProtein ? Number(mProtein) : null, fat: mFat ? Number(mFat) : null, carbs: mCarbs ? Number(mCarbs) : null, mealType: mMealType }),
+    onSuccess: (res) => {
+      if (!res.ok) { setMasterFormError(res.error ?? "保存できませんでした"); return; }
+      setMasterFormError(""); setShowMasterForm(false); setEditingMaster(null); invalidate(); setMasterToast("マスターを更新しました"); setTimeout(() => setMasterToast(""), 2500);
+    },
+    onError: () => setMasterFormError("保存できませんでした。入力を確認してください。"),
+  });
+
+  function resetMasterForm() { setMName(""); setMCalories(""); setMProtein(""); setMFat(""); setMCarbs(""); setMMealType("lunch"); setEditingMaster(null); setShowMasterForm(false); setMasterFormError(""); }
+  function startAddMaster() { resetMasterForm(); setShowMasterForm(true); setMasterFormError(""); window.scrollTo({ top: 0, behavior: "smooth" }); }
+  function startEditMaster(m: Master) { setEditingMaster(m); setMName(m.name); setMCalories(String(m.calories)); setMProtein(m.protein != null ? String(m.protein) : ""); setMFat(m.fat != null ? String(m.fat) : ""); setMCarbs(m.carbs != null ? String(m.carbs) : ""); setMMealType(m.lastMealType); setShowMasterForm(true); setMasterFormError(""); window.scrollTo({ top: 0, behavior: "smooth" }); }
+  function saveMaster() { if (editingMaster) updateMasterMut.mutate(); else createMasterMut.mutate(); }
 
   function resetForm() { setName(""); setCalories(""); setProtein(""); setFat(""); setCarbs(""); setPortion(1); setEditing(null); setShowForm(false); setSuggestOpen(false); }
   function startEdit(m: Meal) { const p = m.portion ?? 1; setEditing(m); setName(m.name); setPortion(p); setCalories(String(unscaleKcal(m.calories, p))); setProtein(m.protein != null ? String(unscaleMacro(m.protein, p) ?? "") : ""); setFat(m.fat != null ? String(unscaleMacro(m.fat, p) ?? "") : ""); setCarbs(m.carbs != null ? String(unscaleMacro(m.carbs, p) ?? "") : ""); setMealType(m.mealType); setShowForm(true); setSuggestOpen(false); window.scrollTo({ top: 0, behavior: "smooth" }); }
@@ -318,6 +364,26 @@ export function App() {
     return day.masters.filter(m => m.name.includes(q));
   }, [day, masterQuery]);
 
+  const allMasters: Master[] = useMemo(() => {
+    // 管理画面は getMasters（最大200件）を優先、未取得時は bundle の一覧を使う
+    if (mastersQ.data?.masters) return mastersQ.data.masters as Master[];
+    return day?.masters ?? [];
+  }, [mastersQ.data, day]);
+
+  const managedMasters = useMemo(() => {
+    let list = [...allMasters];
+    const q = manageQuery.trim();
+    if (q) list = list.filter(m => m.name.includes(q));
+    if (manageFilterType !== "all") list = list.filter(m => m.lastMealType === manageFilterType);
+    switch (manageSort) {
+      case "freq": list.sort((a, b) => b.useCount - a.useCount || b.lastUsedAt.localeCompare(a.lastUsedAt)); break;
+      case "recent": list.sort((a, b) => b.lastUsedAt.localeCompare(a.lastUsedAt)); break;
+      case "name": list.sort((a, b) => a.name.localeCompare(b.name, "ja")); break;
+      case "kcal": list.sort((a, b) => b.calories - a.calories); break;
+    }
+    return list;
+  }, [allMasters, manageQuery, manageFilterType, manageSort]);
+
   const localSuggestions = useMemo(() => {
     if (!day || !name.trim() || editing) return [];
     const q = name.trim();
@@ -341,6 +407,126 @@ export function App() {
 
   const pfcMax = { p: 80, f: 65, c: 260 }; // 参考値（一般的な目安）
 
+  if (view === "masters") {
+    return (
+      <div className="min-h-screen bg-[var(--bg)] pb-28">
+        <SafeAreaTopScrim backgroundColor="var(--bg)" />
+        <main className="mx-auto max-w-2xl px-4 pt-4">
+          {/* Header */}
+          <div className="flex items-center gap-3">
+            <button aria-label="カロリー管理に戻る" onClick={() => { setView("main"); resetMasterForm(); }} className="w-10 h-10 shrink-0 rounded-full bg-[var(--surface)] border border-[var(--border)] text-lg font-bold shadow-sm">‹</button>
+            <div className="flex-1 min-w-0">
+              <h1 className="font-display text-xl font-black leading-tight">マスター管理</h1>
+              <p className="text-xs text-[var(--dim)]">登録済み {allMasters.length}件 ・ 1食分の値で管理しています</p>
+            </div>
+            <span className="rounded-full bg-[var(--surface)] border border-[var(--border)] px-3 py-1 text-xs font-bold">{managedMasters.length}件表示</span>
+          </div>
+
+          {masterToast && <div aria-live="polite" className="mt-3 rounded-xl bg-green-50 border border-green-200 text-green-800 px-3 py-2.5 text-sm font-bold dark:bg-green-950 dark:border-green-800 dark:text-green-200">{masterToast}</div>}
+
+          {/* Add button */}
+          {!showMasterForm && (
+            <button onClick={startAddMaster} className="mt-4 w-full rounded-2xl bg-[var(--accent)] text-white py-3.5 font-display font-black shadow text-sm">＋ 新しい食品をマスターに追加</button>
+          )}
+
+          {/* Master form: add / edit */}
+          {showMasterForm && (
+            <section className="mt-4 rounded-2xl bg-[var(--surface)] border-2 border-[var(--accent)] p-4">
+              <h2 className="font-display font-black">{editingMaster ? "マスターを編集" : "マスターに追加"}</h2>
+              <p className="text-[11px] text-[var(--dim)] mt-1">カロリー・PFCは「1食分」の基準値で入力してください。食事に記録するときに割合で換算されます。</p>
+              <div className="mt-3">
+                <div className="text-xs font-bold text-[var(--dim)]">よく使う区分（目安）</div>
+                <div className="flex gap-1.5 mt-1.5 flex-wrap">
+                  {(Object.keys(MEAL_LABEL) as MealType[]).map(t => (
+                    <button key={t} type="button" onClick={() => setMMealType(t)} className={`px-3 py-2 rounded-full text-sm font-bold border ${mMealType === t ? "bg-[var(--accent)] text-white border-transparent" : "border-[var(--border)]"}`}>{MEAL_LABEL[t].emoji} {MEAL_LABEL[t].label}</button>
+                  ))}
+                </div>
+              </div>
+              <label className="block mt-3 text-xs font-bold text-[var(--dim)]" htmlFor="master-name">食品名 *</label>
+              <input id="master-name" value={mName} onChange={e => setMName(e.target.value)} placeholder="例：プロテイン 50g" className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2.5 text-sm" autoComplete="off" />
+              <label className="block mt-3 text-xs font-bold text-[var(--dim)]" htmlFor="master-cal">カロリー（kcal）* ― 1食分の値</label>
+              <input id="master-cal" type="number" inputMode="numeric" value={mCalories} onChange={e => setMCalories(e.target.value)} placeholder="例：200" className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2.5 text-sm" />
+              <div className="grid grid-cols-3 gap-2 mt-3">
+                <div><label className="block whitespace-nowrap text-xs font-bold text-[var(--dim)]" htmlFor="mf-p">たんぱく質 g<span className="text-[10px] font-normal">（1食分）</span></label><input id="mf-p" type="number" inputMode="decimal" value={mProtein} onChange={e => setMProtein(e.target.value)} placeholder="任意" className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-2 py-2.5 text-sm" /></div>
+                <div><label className="block whitespace-nowrap text-xs font-bold text-[var(--dim)]" htmlFor="mf-f">脂質 g<span className="text-[10px] font-normal">（1食分）</span></label><input id="mf-f" type="number" inputMode="decimal" value={mFat} onChange={e => setMFat(e.target.value)} placeholder="任意" className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-2 py-2.5 text-sm" /></div>
+                <div><label className="block whitespace-nowrap text-xs font-bold text-[var(--dim)]" htmlFor="mf-c">炭水化物 g<span className="text-[10px] font-normal">（1食分）</span></label><input id="mf-c" type="number" inputMode="decimal" value={mCarbs} onChange={e => setMCarbs(e.target.value)} placeholder="任意" className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-2 py-2.5 text-sm" /></div>
+              </div>
+              {masterFormError && <p className="mt-3 rounded-xl bg-red-50 border border-red-200 px-3 py-2 text-xs font-bold text-red-700 dark:bg-red-950 dark:border-red-800 dark:text-red-200">{masterFormError}</p>}
+              <div className="flex gap-2 mt-4">
+                <button disabled={!mName.trim() || !mCalories || Number(mCalories) < 0 || createMasterMut.isPending || updateMasterMut.isPending} onClick={saveMaster} className="flex-1 rounded-xl bg-[var(--accent)] text-white py-3 font-bold disabled:opacity-40">{editingMaster ? "更新する" : "追加する"}</button>
+                <button onClick={resetMasterForm} className="rounded-xl border border-[var(--border)] px-4 py-3 text-sm font-bold">キャンセル</button>
+              </div>
+            </section>
+          )}
+
+          {/* Search / filter / sort */}
+          <section className="mt-4 rounded-2xl bg-[var(--surface)] border border-[var(--border)] p-3">
+            <input aria-label="マスターを検索" value={manageQuery} onChange={e => setManageQuery(e.target.value)} placeholder="食品名で検索…" className="w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2.5 text-sm" />
+            <div className="flex gap-1.5 mt-3 flex-wrap" role="group" aria-label="区分で絞り込み">
+              <button onClick={() => setManageFilterType("all")} className={`px-3 py-1.5 rounded-full text-xs font-bold border ${manageFilterType === "all" ? "bg-[var(--accent)] text-white border-transparent" : "border-[var(--border)]"}`}>すべて</button>
+              {(Object.keys(MEAL_LABEL) as MealType[]).map(t => (
+                <button key={t} onClick={() => setManageFilterType(t)} className={`px-3 py-1.5 rounded-full text-xs font-bold border ${manageFilterType === t ? "bg-[var(--accent)] text-white border-transparent" : "border-[var(--border)]"}`}>{MEAL_LABEL[t].emoji} {MEAL_LABEL[t].label}</button>
+              ))}
+            </div>
+            <div className="flex items-center gap-2 mt-3">
+              <label htmlFor="master-sort" className="text-xs font-bold text-[var(--dim)] shrink-0">並び順</label>
+              <select id="master-sort" aria-label="マスターの並び順" value={manageSort} onChange={e => setManageSort(e.target.value as typeof manageSort)} className="flex-1 rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm">
+                <option value="freq">よく使う順</option>
+                <option value="recent">最近使った順</option>
+                <option value="name">名前順</option>
+                <option value="kcal">カロリーが高い順</option>
+              </select>
+            </div>
+          </section>
+
+          {/* List */}
+          <section className="mt-3">
+            {mastersQ.isPending && <p className="py-10 text-center text-sm text-[var(--dim)]">読み込み中…</p>}
+            {mastersQ.error && <div className="rounded-2xl bg-red-50 border border-red-200 p-4 text-sm text-red-800">読み込めませんでした。<button className="ml-2 font-bold underline" onClick={() => mastersQ.refetch()}>再試行</button></div>}
+            {!mastersQ.isPending && allMasters.length === 0 && (
+              <div className="rounded-2xl border border-dashed border-[var(--border)] bg-[var(--surface)] py-10 px-4 text-center">
+                <p className="font-display font-black">まだマスターがありません</p>
+                <p className="text-xs text-[var(--dim)] mt-2 leading-relaxed">上の「＋ 新しい食品をマスターに追加」から手動で登録できます。<br />食事を記録した食品も自動でここに登録されます。</p>
+              </div>
+            )}
+            {!mastersQ.isPending && allMasters.length > 0 && managedMasters.length === 0 && (
+              <p className="py-8 text-center text-sm text-[var(--dim)]">条件に一致するマスターがありません。検索や絞り込みを変えてみてください。</p>
+            )}
+            {managedMasters.length > 0 && (
+              <div className="rounded-2xl bg-[var(--surface)] border border-[var(--border)] divide-y divide-[var(--border)] overflow-hidden">
+                {managedMasters.map(m => (
+                  <div key={m.id} className="px-3.5 py-3">
+                    <div className="flex items-start gap-2">
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-bold leading-snug break-words">{m.name}</div>
+                        <div className="text-[11px] text-[var(--dim)] mt-0.5">
+                          {(m.protein != null || m.fat != null || m.carbs != null) ? <span>P {m.protein ?? "—"}g ・ F {m.fat ?? "—"}g ・ C {m.carbs ?? "—"}g（1食分）　</span> : <span>PFC未登録　</span>}
+                          <span>{MEAL_LABEL[m.lastMealType].emoji} {MEAL_LABEL[m.lastMealType].label}</span>
+                          {m.useCount > 0 ? <span> ・ {m.useCount}回記録</span> : <span> ・ 手動登録</span>}
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <span className="font-display font-black">{m.calories.toLocaleString()}</span><span className="text-[10px] text-[var(--dim)]"> kcal</span>
+                        <div className="text-[10px] text-[var(--dim)]">1食分</div>
+                      </div>
+                    </div>
+                    <div className="flex gap-1.5 mt-2.5 flex-wrap">
+                      <button aria-label={`${m.name}を編集`} onClick={() => startEditMaster(m)} className="rounded-full border border-[var(--border)] px-3 py-1.5 text-xs font-bold text-[var(--accent)]">編集</button>
+                      <button aria-label={`${m.name}をマスターから削除`} onClick={() => { if (confirmDelMaster === m.id) { delMasterMut.mutate(m.id); setConfirmDelMaster(null); if (editingMaster?.id === m.id) resetMasterForm(); } else { setConfirmDelMaster(m.id); setTimeout(() => setConfirmDelMaster(null), 3000); } }} className={`rounded-full px-3 py-1.5 text-xs font-bold ${confirmDelMaster === m.id ? "bg-red-500 text-white" : "border border-red-200 text-red-500"}`}>{confirmDelMaster === m.id ? "本当に削除する" : "削除"}</button>
+                    </div>
+                    {confirmDelMaster === m.id && <p className="text-[11px] text-red-500 mt-1.5">マスターから削除します（過去の食事記録は残ります）。もう一度「本当に削除する」を押してください。</p>}
+                  </div>
+                ))}
+              </div>
+            )}
+            <p className="text-[11px] text-[var(--dim)] mt-3 leading-relaxed px-1">マスターを編集しても、すでに記録済みの食事のカロリーは変わりません。次回から追加するときに新しい値が使われます。削除しても過去の記録は消えません。</p>
+            <button onClick={() => { setView("main"); resetMasterForm(); }} className="mt-4 w-full rounded-2xl bg-[var(--surface)] border border-[var(--border)] py-3 font-bold text-sm">カロリー管理に戻る</button>
+          </section>
+        </main>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[var(--bg)] pb-28">
       <SafeAreaTopScrim backgroundColor="var(--bg)" />
@@ -348,12 +534,15 @@ export function App() {
 
         {/* Date nav */}
         <div className="flex items-center justify-between gap-2">
-          <button aria-label="前の日" onClick={() => setDate(addDays(date, -1))} className="w-10 h-10 rounded-full bg-[var(--surface)] border border-[var(--border)] text-lg font-bold shadow-sm">‹</button>
-          <div className="text-center">
+          <button aria-label="前の日" onClick={() => setDate(addDays(date, -1))} className="w-10 h-10 shrink-0 rounded-full bg-[var(--surface)] border border-[var(--border)] text-lg font-bold shadow-sm">‹</button>
+          <div className="text-center flex-1 min-w-0">
             <div className="font-display text-lg font-black leading-tight">{isToday(date) ? "今日" : formatJa(date)}</div>
             {isToday(date) ? <div className="text-xs text-[var(--dim)]">{formatJa(date)}</div> : <button onClick={() => setDate(todayKey())} className="text-xs font-bold text-[var(--accent)] underline">今日に戻る</button>}
           </div>
-          <button aria-label="次の日" onClick={() => setDate(addDays(date, 1))} className="w-10 h-10 rounded-full bg-[var(--surface)] border border-[var(--border)] text-lg font-bold shadow-sm">›</button>
+          <button aria-label="次の日" onClick={() => setDate(addDays(date, 1))} className="w-10 h-10 shrink-0 rounded-full bg-[var(--surface)] border border-[var(--border)] text-lg font-bold shadow-sm">›</button>
+          <button aria-label="マスター管理画面" title="マスター管理" onClick={() => setView("masters")} className="w-10 h-10 shrink-0 rounded-full bg-[var(--surface)] border border-[var(--border)] shadow-sm flex items-center justify-center text-[var(--dim)]">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" /><circle cx="12" cy="12" r="3" /></svg>
+          </button>
         </div>
         <div className="mt-2 flex justify-center">
           <input aria-label="日付を選択" type="date" value={date} onChange={e => e.target.value && setDate(e.target.value)} className="text-xs bg-transparent text-[var(--dim)] border border-[var(--border)] rounded-full px-3 py-1" />
@@ -397,7 +586,6 @@ export function App() {
               <button onClick={() => setShowQuick(v => !v)} className="rounded-2xl bg-[var(--surface)] border border-[var(--border)] py-3.5 font-display font-black shadow-sm text-sm">🍱 よくある食品</button>
               <button onClick={() => setShowMasters(v => !v)} className="rounded-2xl bg-[var(--surface)] border border-[var(--border)] py-3.5 font-display font-black shadow-sm text-sm">📚 マスター{day.masters.length > 0 ? `（${day.masters.length}）` : ""}</button>
             </div>
-
             {/* クイック追加（よくある食品・マスター・履歴チップ）で使う割合 */}
             <section className="mt-3 rounded-2xl bg-[var(--surface)] border border-[var(--border)] p-3">
               <PortionSelector label="クイック追加の割合（1食分が基準）" value={instantPortion} onChange={setInstantPortion} />
@@ -444,11 +632,13 @@ export function App() {
                           <span className="block text-[13px] font-bold truncate">{m.name}</span>
                           <span className="block text-[11px] text-[var(--dim)]">{instantPortion !== 1 ? `${scaleKcal(m.calories, instantPortion)} kcal（${portionLabel(instantPortion)}／1食分 ${m.calories} kcal）` : `${m.calories} kcal`}{ m.useCount > 1 ? ` ・ ${m.useCount}回記録` : ""} ・ 最終 {MEAL_LABEL[m.lastMealType].label}</span>
                         </button>
+                        <button aria-label={`${m.name}を編集`} onClick={() => { setView("masters"); startEditMaster(m); }} className="text-xs font-bold px-2 py-1.5 rounded shrink-0 text-[var(--accent)]">編集</button>
                         <button aria-label={`${m.name}をマスターから削除`} onClick={() => { if (confirmDelMaster === m.id) { delMasterMut.mutate(m.id); setConfirmDelMaster(null); } else { setConfirmDelMaster(m.id); setTimeout(() => setConfirmDelMaster(null), 3000); } }} className={`text-xs font-bold px-2 py-1.5 rounded shrink-0 ${confirmDelMaster === m.id ? "bg-red-500 text-white" : "text-red-500"}`}>{confirmDelMaster === m.id ? "本当に削除" : "削除"}</button>
                       </div>
                     ))}
                   </div>
                 )}
+                <button onClick={() => setView("masters")} className="mt-3 w-full rounded-xl bg-[var(--surface2)] border border-[var(--border)] py-2.5 text-xs font-bold text-[var(--accent)]">マスター管理画面で追加・編集・削除する →</button>
                 <p className="text-[11px] text-[var(--dim)] mt-2">一度入力した食品は自動でマスターに登録されます。名前が完全に同じものや、数量違いなど「同じ食品と思われるもの」は重複登録されません。タップで選択中の区分に追加できます。</p>
               </section>
             )}

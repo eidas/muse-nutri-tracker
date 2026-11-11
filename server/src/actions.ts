@@ -449,6 +449,83 @@ return { ok: true};
 },
 }),
 
+createMaster: defineAction({
+description: "マスター食品を手動で新規登録します。同じ名前（表記ゆれ含む）が既にある場合は登録しません。",
+request: z.object({
+name: z.string().min(1).max(100),
+calories: z.number().int().min(0).max(10000),
+protein: z.number().min(0).max(1000).nullable().optional(),
+fat: z.number().min(0).max(1000).nullable().optional(),
+carbs: z.number().min(0).max(1000).nullable().optional(),
+mealType: mealTypeEnum,
+}),
+response: z.object({ ok: z.boolean(), id: z.number().nullable(), error: z.string().nullable() }),
+async handler(ctx, args) {
+const db = ctx.db<typeof schema>();
+const trimmed = args.name.trim();
+const normalized = normalizeName(trimmed);
+if (!normalized) return { ok: false, id: null, error: "食品名を入力してください" };
+const existing = await db.select({ id: schema.masterFoods.id, normalizedName: schema.masterFoods.normalizedName }).from(schema.masterFoods);
+for (const m of existing) {
+if (m.normalizedName === normalized) return { ok: false, id: null, error: "同じ名前のマスター食品が既に登録されています" };
+}
+const canonical = canonicalKey(normalized);
+const now = new Date();
+const res = await db.insert(schema.masterFoods).values({
+name: trimmed,
+normalizedName: normalized,
+canonicalKey: canonical,
+calories: args.calories,
+protein: args.protein ?? null,
+fat: args.fat ?? null,
+carbs: args.carbs ?? null,
+lastMealType: args.mealType,
+useCount: 0,
+lastUsedAt: now,
+createdAt: now,
+}).returning({ id: schema.masterFoods.id });
+ctx.invalidateQueries();
+return { ok: true, id: res[0]!.id, error: null };
+},
+}),
+
+updateMaster: defineAction({
+description: "マスター食品の名前・カロリー・PFC・区分を修正します。別のマスターと名前が重なる場合は保存しません。",
+request: z.object({
+id: z.number(),
+name: z.string().min(1).max(100),
+calories: z.number().int().min(0).max(10000),
+protein: z.number().min(0).max(1000).nullable().optional(),
+fat: z.number().min(0).max(1000).nullable().optional(),
+carbs: z.number().min(0).max(1000).nullable().optional(),
+mealType: mealTypeEnum,
+}),
+response: z.object({ ok: z.boolean(), error: z.string().nullable() }),
+async handler(ctx, args) {
+const db = ctx.db<typeof schema>();
+const trimmed = args.name.trim();
+const normalized = normalizeName(trimmed);
+if (!normalized) return { ok: false, error: "食品名を入力してください" };
+const existing = await db.select({ id: schema.masterFoods.id, normalizedName: schema.masterFoods.normalizedName }).from(schema.masterFoods);
+for (const m of existing) {
+if (m.id !== args.id && m.normalizedName === normalized) return { ok: false, error: "同じ名前のマスター食品が既に登録されています" };
+}
+const canonical = canonicalKey(normalized);
+await db.update(schema.masterFoods).set({
+name: trimmed,
+normalizedName: normalized,
+canonicalKey: canonical,
+calories: args.calories,
+protein: args.protein ?? null,
+fat: args.fat ?? null,
+carbs: args.carbs ?? null,
+lastMealType: args.mealType,
+}).where(eq(schema.masterFoods.id, args.id));
+ctx.invalidateQueries();
+return { ok: true, error: null };
+},
+}),
+
 addMeal: defineAction({
 description: "食事を1件追加し、重複でなければマスター食品にも登録します。calories等は1食分の基準値で受け取り、portion（割合）で換算して記録します。マスターには基準値で登録します。",
 request: z.object({
