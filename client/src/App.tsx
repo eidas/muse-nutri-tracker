@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { SafeAreaTopScrim } from "@hatch/space-sdk/client";
 import { api, type ApiResponse } from "./api";
 
@@ -181,6 +181,10 @@ type AddVars = {
   name: string; calories: number;
   protein: number | null; fat: number | null; carbs: number | null;
   mealType: MealType; masterId?: number; portion: number;
+  // 記録先の日付はミューテーション変数として明示的に保持する。
+  // 画面の date 状態をクロージャで参照すると、通信中に日付を移動した際に
+  // 別の日のキャッシュへ楽観的更新が混ざる恐れがあるため。
+  targetDate: string;
 };
 
 export function App() {
@@ -237,14 +241,19 @@ export function App() {
   const tempIdRef = useRef(-1);
   const backfilledRef = useRef(false);
 
-  // 画面の全データを1リクエストで取得（前回データを保持して切り替えを瞬時に）
+  // 画面の全データを1リクエストで取得。
+  // 日付ごとに queryKey を分け、placeholderData で前日のデータを流用しない
+  // （前日の食事・合計が新しい日付の見出しの下に表示され、「昨日も今日と
+  // 同じ内容になった」ように見える不具合の原因だった）。
   const bundleQ = useQuery({
     queryKey: ["bundle", date],
     queryFn: () => api.getDayBundle({ date }),
-    placeholderData: keepPreviousData,
     staleTime: 30_000,
   });
-  const day = bundleQ.data;
+  // 取得できたバンドルでも、選択中の日付と一致しないものは表示に使わない
+  // （キャッシュや再取得のタイミングで別日のデータが混ざらないための防御）。
+  const day = bundleQ.data && bundleQ.data.date === date ? bundleQ.data : undefined;
+  const dayMismatch = bundleQ.data != null && bundleQ.data.date !== date;
 
   const mastersQ = useQuery({
     queryKey: ["masters"],
@@ -282,22 +291,42 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [day]);
 
+  // 日付を移動したら、前日の食事に対する編集フォームや削除確認などの
+  // 一時状態を引き継がない（別日の記録を誤って編集・表示しないため）。
+  const firstDateRef = useRef(true);
+  useEffect(() => {
+    if (firstDateRef.current) { firstDateRef.current = false; return; }
+    setEditing(null);
+    setShowForm(false);
+    setShowPhoto(false);
+    resetPhoto();
+    setShowGoal(false);
+    setShowWeightForm(false);
+    setConfirmDel(null);
+    setSuggestOpen(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [date]);
+
   // ---- 楽観的更新つきミューテーション ----
+  // 楽観的更新は必ず「対象日付のキャッシュキー」だけを書き換える。
+  // 対象日付は変数（v.targetDate）から取り、画面の date 状態には依存しない。
   const addMut = useMutation({
     mutationFn: (v: AddVars) => v.masterId != null
-      ? api.addMealFromMaster({ masterId: v.masterId, mealType: v.mealType, portion: v.portion, date })
-      : api.addMeal({ name: v.name, calories: v.calories, protein: v.protein, fat: v.fat, carbs: v.carbs, mealType: v.mealType, portion: v.portion, date }),
+      ? api.addMealFromMaster({ masterId: v.masterId, mealType: v.mealType, portion: v.portion, date: v.targetDate })
+      : api.addMeal({ name: v.name, calories: v.calories, protein: v.protein, fat: v.fat, carbs: v.carbs, mealType: v.mealType, portion: v.portion, date: v.targetDate }),
     onMutate: async (v) => {
-      await qc.cancelQueries({ queryKey: ["bundle", date] });
-      const prev = qc.getQueryData<Bundle>(["bundle", date]);
-      if (prev) {
+      const key = ["bundle", v.targetDate] as const;
+      await qc.cancelQueries({ queryKey: key });
+      const prev = qc.getQueryData<Bundle>(key);
+      // キャッシュの日付が対象日付と一致するときだけ楽観的に追記する
+      if (prev && prev.date === v.targetDate) {
         const temp: Meal = {
           id: tempIdRef.current--, name: v.name, calories: scaleKcal(v.calories, v.portion),
           protein: scaleMacro(v.protein, v.portion), fat: scaleMacro(v.fat, v.portion), carbs: scaleMacro(v.carbs, v.portion),
-          mealType: v.mealType, portion: v.portion, date, created_at: new Date().toISOString(),
+          mealType: v.mealType, portion: v.portion, date: v.targetDate, created_at: new Date().toISOString(),
         };
         const meals = [...prev.meals, temp];
-        qc.setQueryData<Bundle>(["bundle", date], {
+        qc.setQueryData<Bundle>(key, {
           ...prev, meals,
           totalCalories: meals.reduce((s, m) => s + m.calories, 0),
           totalProtein: Math.round(meals.reduce((s, m) => s + (m.protein ?? 0), 0) * 10) / 10,
@@ -305,9 +334,9 @@ export function App() {
           totalCarbs: Math.round(meals.reduce((s, m) => s + (m.carbs ?? 0), 0) * 10) / 10,
         });
       }
-      return { prev };
+      return { prev, targetDate: v.targetDate };
     },
-    onError: (_e, _v, ctx) => { if (ctx?.prev) qc.setQueryData(["bundle", date], ctx.prev); },
+    onError: (_e, _v, ctx) => { if (ctx?.prev) qc.setQueryData(["bundle", ctx.targetDate], ctx.prev); },
     onSettled: invalidate,
   });
 
@@ -367,6 +396,9 @@ export function App() {
     const targets = photoItems.filter(it => it.selected && it.name.trim() && it.calories !== "" && !Number.isNaN(Number(it.calories)) && Number(it.calories) >= 0);
     if (targets.length === 0) return;
     setPhotoSaving(true);
+    // 保存開始時点の日付を記録先として固定する（保存中に日付が変わっても
+    // 別の日に記録されないように）
+    const targetDate = date;
     try {
       for (const it of targets) {
         await addMut.mutateAsync({
@@ -377,6 +409,7 @@ export function App() {
           carbs: it.carbs ? Number(it.carbs) : null,
           mealType,
           portion: photoPortion,
+          targetDate,
         });
       }
       resetPhoto();
@@ -393,13 +426,14 @@ export function App() {
     onSuccess: () => { invalidate(); resetForm(); },
   });
   const delMut = useMutation({
-    mutationFn: (id: number) => api.deleteMeal({ id }),
-    onMutate: async (id) => {
-      await qc.cancelQueries({ queryKey: ["bundle", date] });
-      const prev = qc.getQueryData<Bundle>(["bundle", date]);
-      if (prev) {
-        const meals = prev.meals.filter(m => m.id !== id);
-        qc.setQueryData<Bundle>(["bundle", date], {
+    mutationFn: (v: { id: number; targetDate: string }) => api.deleteMeal({ id: v.id }),
+    onMutate: async (v) => {
+      const key = ["bundle", v.targetDate] as const;
+      await qc.cancelQueries({ queryKey: key });
+      const prev = qc.getQueryData<Bundle>(key);
+      if (prev && prev.date === v.targetDate) {
+        const meals = prev.meals.filter(m => m.id !== v.id);
+        qc.setQueryData<Bundle>(key, {
           ...prev, meals,
           totalCalories: meals.reduce((s, m) => s + m.calories, 0),
           totalProtein: Math.round(meals.reduce((s, m) => s + (m.protein ?? 0), 0) * 10) / 10,
@@ -407,25 +441,26 @@ export function App() {
           totalCarbs: Math.round(meals.reduce((s, m) => s + (m.carbs ?? 0), 0) * 10) / 10,
         });
       }
-      return { prev };
+      return { prev, targetDate: v.targetDate };
     },
-    onError: (_e, _v, ctx) => { if (ctx?.prev) qc.setQueryData(["bundle", date], ctx.prev); },
+    onError: (_e, _v, ctx) => { if (ctx?.prev) qc.setQueryData(["bundle", ctx.targetDate], ctx.prev); },
     onSettled: invalidate,
   });
   const goalMut = useMutation({ mutationFn: () => api.updateGoal({ dailyGoal: Number(goalInput) }), onSuccess: () => { invalidate(); setShowGoal(false); } });
   const weightMut = useMutation({
-    mutationFn: () => api.addWeight({ weight: Number(weightInput), date }),
-    onMutate: async () => {
-      await qc.cancelQueries({ queryKey: ["bundle", date] });
-      const prev = qc.getQueryData<Bundle>(["bundle", date]);
-      if (prev) {
-        const w = { id: tempIdRef.current--, weight: Number(weightInput), date };
-        const weights = [w, ...prev.weights.filter(x => x.date !== date)].sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id).slice(0, 30);
-        qc.setQueryData<Bundle>(["bundle", date], { ...prev, weights });
+    mutationFn: (v: { weight: number; targetDate: string }) => api.addWeight({ weight: v.weight, date: v.targetDate }),
+    onMutate: async (v) => {
+      const key = ["bundle", v.targetDate] as const;
+      await qc.cancelQueries({ queryKey: key });
+      const prev = qc.getQueryData<Bundle>(key);
+      if (prev && prev.date === v.targetDate) {
+        const w = { id: tempIdRef.current--, weight: v.weight, date: v.targetDate };
+        const weights = [w, ...prev.weights.filter(x => x.date !== v.targetDate)].sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id).slice(0, 30);
+        qc.setQueryData<Bundle>(key, { ...prev, weights });
       }
-      return { prev };
+      return { prev, targetDate: v.targetDate };
     },
-    onError: (_e, _v, ctx) => { if (ctx?.prev) qc.setQueryData(["bundle", date], ctx.prev); },
+    onError: (_e, _v, ctx) => { if (ctx?.prev) qc.setQueryData(["bundle", ctx.targetDate], ctx.prev); },
     onSuccess: () => { setWeightInput(""); setShowWeightForm(false); },
     onSettled: invalidate,
   });
@@ -460,13 +495,13 @@ export function App() {
   function startEdit(m: Meal) { const p = m.portion ?? 1; setEditing(m); setName(m.name); setPortion(p); setCalories(String(unscaleKcal(m.calories, p))); setProtein(m.protein != null ? String(unscaleMacro(m.protein, p) ?? "") : ""); setFat(m.fat != null ? String(unscaleMacro(m.fat, p) ?? "") : ""); setCarbs(m.carbs != null ? String(unscaleMacro(m.carbs, p) ?? "") : ""); setMealType(m.mealType); setShowForm(true); setSuggestOpen(false); window.scrollTo({ top: 0, behavior: "smooth" }); }
 
   function addRecent(item: RecentItem, t: MealType) {
-    addMut.mutate({ name: item.name, calories: item.calories, protein: item.protein, fat: item.fat, carbs: item.carbs, mealType: t, portion: instantPortion });
+    addMut.mutate({ name: item.name, calories: item.calories, protein: item.protein, fat: item.fat, carbs: item.carbs, mealType: t, portion: instantPortion, targetDate: date });
   }
   function addMaster(m: Master, t: MealType) {
-    addMut.mutate({ name: m.name, calories: m.calories, protein: m.protein, fat: m.fat, carbs: m.carbs, mealType: t, masterId: m.id, portion: instantPortion });
+    addMut.mutate({ name: m.name, calories: m.calories, protein: m.protein, fat: m.fat, carbs: m.carbs, mealType: t, masterId: m.id, portion: instantPortion, targetDate: date });
   }
   function addQuick(f: typeof QUICK_FOODS[number], t: MealType) {
-    addMut.mutate({ name: f.name, calories: f.kcal, protein: f.p, fat: f.f, carbs: f.c, mealType: t, portion: instantPortion });
+    addMut.mutate({ name: f.name, calories: f.kcal, protein: f.p, fat: f.f, carbs: f.c, mealType: t, portion: instantPortion, targetDate: date });
   }
   function applySuggestion(s: { name: string; calories: number; protein: number | null; fat: number | null; carbs: number | null }) {
     setName(s.name);
@@ -674,7 +709,7 @@ export function App() {
           <input aria-label="日付を選択" type="date" value={date} onChange={e => e.target.value && setDate(e.target.value)} className="text-xs bg-transparent text-[var(--dim)] border border-[var(--border)] rounded-full px-3 py-1" />
         </div>
 
-        {bundleQ.isPending && <p className="py-16 text-center text-sm text-[var(--dim)]">読み込み中…</p>}
+        {(bundleQ.isPending || dayMismatch) && <p className="py-16 text-center text-sm text-[var(--dim)]">読み込み中…</p>}
         {bundleQ.error && <div className="mt-6 rounded-2xl bg-red-50 border border-red-200 p-4 text-sm text-red-800">読み込めませんでした。<button className="ml-2 font-bold underline" onClick={() => bundleQ.refetch()}>再試行</button></div>}
 
         {day && (
@@ -912,7 +947,7 @@ export function App() {
                 )}
                 {(addMut.error || editMut.error) && <p className="text-xs text-red-600 mt-2">保存できませんでした。入力を確認してください。</p>}
                 <div className="flex gap-2 mt-4">
-                  <button disabled={!name.trim() || !calories || Number(calories) < 0 || addMut.isPending || editMut.isPending} onClick={() => editing ? editMut.mutate() : addMut.mutate({ name: name.trim(), calories: Number(calories), protein: protein ? Number(protein) : null, fat: fat ? Number(fat) : null, carbs: carbs ? Number(carbs) : null, mealType, portion }, { onSuccess: resetForm })} className="flex-1 rounded-xl bg-[var(--accent)] text-white py-3 font-bold disabled:opacity-40">{editing ? "更新する" : "記録する"}</button>
+                  <button disabled={!name.trim() || !calories || Number(calories) < 0 || addMut.isPending || editMut.isPending} onClick={() => editing ? editMut.mutate() : addMut.mutate({ name: name.trim(), calories: Number(calories), protein: protein ? Number(protein) : null, fat: fat ? Number(fat) : null, carbs: carbs ? Number(carbs) : null, mealType, portion, targetDate: date }, { onSuccess: resetForm })} className="flex-1 rounded-xl bg-[var(--accent)] text-white py-3 font-bold disabled:opacity-40">{editing ? "更新する" : "記録する"}</button>
                   <button onClick={resetForm} className="rounded-xl border border-[var(--border)] px-4 py-3 text-sm font-bold">キャンセル</button>
                 </div>
                 {!editing && <p className="text-[11px] text-[var(--dim)] mt-2">記録するとマスター食品に自動登録されます（重複・よく似た名前は登録されません）。</p>}
@@ -956,7 +991,7 @@ export function App() {
                             </div>
                             <span className="font-display font-black whitespace-nowrap">{m.calories.toLocaleString()}<span className="text-[10px] font-normal text-[var(--dim)]"> kcal</span></span>
                             <button aria-label={`${m.name}を編集`} onClick={() => startEdit(m)} className="text-xs font-bold text-[var(--accent)] px-1.5 py-1">編集</button>
-                            <button aria-label={`${m.name}を削除`} onClick={() => { if (confirmDel === m.id) { delMut.mutate(m.id); setConfirmDel(null); } else { setConfirmDel(m.id); setTimeout(() => setConfirmDel(null), 3000); } }} className={`text-xs font-bold px-1.5 py-1 rounded ${confirmDel === m.id ? "bg-red-500 text-white" : "text-red-500"}`}>{confirmDel === m.id ? "本当に削除" : "削除"}</button>
+                            <button aria-label={`${m.name}を削除`} onClick={() => { if (confirmDel === m.id) { delMut.mutate({ id: m.id, targetDate: m.date }); setConfirmDel(null); } else { setConfirmDel(m.id); setTimeout(() => setConfirmDel(null), 3000); } }} className={`text-xs font-bold px-1.5 py-1 rounded ${confirmDel === m.id ? "bg-red-500 text-white" : "text-red-500"}`}>{confirmDel === m.id ? "本当に削除" : "削除"}</button>
                           </div>
                         ))}
                       </div>
@@ -1001,7 +1036,7 @@ export function App() {
                 <div className="flex gap-2 mt-3">
                   <input aria-label="体重 kg" type="number" inputMode="decimal" step="0.1" value={weightInput} onChange={e => setWeightInput(e.target.value)} placeholder="例：65.5" className="flex-1 rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2.5 text-sm" />
                   <span className="self-center text-sm text-[var(--dim)]">kg</span>
-                  <button disabled={!weightInput} onClick={() => weightMut.mutate()} className="rounded-xl bg-[var(--accent2)] text-white px-4 py-2.5 text-sm font-bold disabled:opacity-40">記録</button>
+                  <button disabled={!weightInput} onClick={() => weightMut.mutate({ weight: Number(weightInput), targetDate: date })} className="rounded-xl bg-[var(--accent2)] text-white px-4 py-2.5 text-sm font-bold disabled:opacity-40">記録</button>
                 </div>
               )}
               {day.weights.length > 0 ? (
