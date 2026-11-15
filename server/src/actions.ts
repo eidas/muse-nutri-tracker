@@ -19,7 +19,7 @@ date: z.string(),
 created_at: z.string(),
 });
 
-const portionSchema = z.number().min(0.1).max(1);
+const portionSchema = z.number().min(0.1).max(10);
 
 function scaleCalories(base: number, portion: number): number {
 return Math.round(base * portion);

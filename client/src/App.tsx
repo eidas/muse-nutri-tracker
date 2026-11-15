@@ -35,12 +35,13 @@ const QUICK_FOODS: { name: string; kcal: number; p: number; f: number; c: number
   { name: "プロテイン 1杯", kcal: 110, p: 21, f: 1.0, c: 4.0 },
 ];
 
+function formatPortion(p: number): string {
+  return String(Math.round(p * 100) / 100);
+}
 function portionLabel(p: number): string {
   if (p === 1) return "1食分";
   if (p === 0.5) return "半分";
-  if (p === 0.25) return "1/4";
-  if (p === 0.75) return "3/4";
-  return `×${p}`;
+  return `×${formatPortion(p)}`;
 }
 function scaleKcal(base: number, portion: number): number { return Math.round(base * portion); }
 function scaleMacro(v: number | null, portion: number): number | null {
@@ -58,45 +59,71 @@ function unscaleMacro(v: number | null, portion: number): number | null {
 
 const PORTION_PRESETS: { v: number; label: string }[] = [
   { v: 1, label: "1食分" },
-  { v: 0.75, label: "3/4" },
   { v: 0.5, label: "半分" },
-  { v: 0.25, label: "1/4" },
 ];
 
+// 分量は「スライダー（0.1〜2.0）」＋「整数分の追加（0〜8食分）」の合計で表す。
+// 合計は0.1〜10。2.0以下は追加なし、2.0を超える分は整数分として分解する
+// （例：合計3.5 = スライダー1.5 + 整数分2）。
+const PORTION_SLIDER_MIN = 0.1;
+const PORTION_SLIDER_MAX = 2.0;
+const PORTION_EXTRA_MAX = 8;
+const PORTION_TOTAL_MAX = 10;
+
+function splitPortion(value: number): { slider: number; extra: number } {
+  const total = Math.min(PORTION_TOTAL_MAX, Math.max(PORTION_SLIDER_MIN, value));
+  if (total <= PORTION_SLIDER_MAX) return { slider: total, extra: 0 };
+  const extra = Math.min(PORTION_EXTRA_MAX, Math.ceil(total - PORTION_SLIDER_MAX));
+  return { slider: Math.round((total - extra) * 10) / 10, extra };
+}
+
 function PortionSelector({ value, onChange, label }: { value: number; onChange: (v: number) => void; label: string }) {
-  const isPreset = PORTION_PRESETS.some(p => p.v === value);
-  const [customActive, setCustomActive] = useState(!isPreset);
-  const [customText, setCustomText] = useState(!isPreset ? String(value) : "0.6");
-  useEffect(() => {
-    if (!PORTION_PRESETS.some(p => p.v === value)) {
-      setCustomActive(true);
-      setCustomText(String(value));
-    } else {
-      setCustomActive(false);
-    }
-  }, [value]);
-  function handleCustom(text: string) {
-    setCustomText(text);
-    const n = Number(text);
-    if (!Number.isNaN(n) && n >= 0.1 && n <= 0.9) onChange(Math.round(n * 100) / 100);
+  const { slider, extra } = splitPortion(value);
+  const total = Math.round((slider + extra) * 100) / 100;
+  function setSlider(next: number) {
+    const s = Math.min(PORTION_SLIDER_MAX, Math.max(PORTION_SLIDER_MIN, Math.round(next * 10) / 10));
+    onChange(Math.round((s + extra) * 100) / 100);
   }
-  const customValid = customText !== "" && !Number.isNaN(Number(customText)) && Number(customText) >= 0.1 && Number(customText) <= 0.9;
+  function setExtra(next: number) {
+    const e = Math.min(PORTION_EXTRA_MAX, Math.max(0, next));
+    onChange(Math.round((slider + e) * 100) / 100);
+  }
   return (
     <div>
-      <div className="text-xs font-bold text-[var(--dim)]">{label}</div>
-      <div className="flex gap-1.5 mt-1.5 flex-wrap" role="group" aria-label={label}>
-        {PORTION_PRESETS.map(p => (
-          <button key={p.v} type="button" aria-pressed={!customActive && value === p.v} onClick={() => { setCustomActive(false); onChange(p.v); }} className={`px-3 py-2 rounded-full text-sm font-bold border ${!customActive && value === p.v ? "bg-[var(--accent)] text-white border-transparent" : "border-[var(--border)]"}`}>{p.label}</button>
-        ))}
-        <button type="button" aria-pressed={customActive} onClick={() => { setCustomActive(true); const n = Number(customText); if (!Number.isNaN(n) && n >= 0.1 && n <= 0.9) onChange(Math.round(n * 100) / 100); else { setCustomText("0.6"); onChange(0.6); } }} className={`px-3 py-2 rounded-full text-sm font-bold border ${customActive ? "bg-[var(--accent)] text-white border-transparent" : "border-[var(--border)]"}`}>自由入力</button>
+      <div className="flex items-baseline justify-between gap-2">
+        <div className="text-xs font-bold text-[var(--dim)]">{label}</div>
+        <div className="text-sm font-black" aria-live="polite">合計 ×{formatPortion(total)}{total === 1 ? "（1食分）" : total === 0.5 ? "（半分）" : ""}</div>
       </div>
-      {customActive && (
-        <div className="mt-2 flex items-center gap-2 flex-wrap">
-          <input aria-label="自由入力の割合（0.1〜0.9）" type="number" inputMode="decimal" step="0.05" min="0.1" max="0.9" value={customText} onChange={e => handleCustom(e.target.value)} className="w-24 rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm" />
-          <input aria-label="割合スライダー" type="range" min="0.1" max="0.9" step="0.05" value={customValid ? Number(customText) : 0.6} onChange={e => handleCustom(e.target.value)} className="flex-1 min-w-28 accent-[#ea580c]" />
-          <span className="text-xs text-[var(--dim)]">0.1〜0.9{customValid ? `（×${Number(customText)}）` : " の範囲で入力"}</span>
+      <div className="flex gap-1.5 mt-1.5 flex-wrap" role="group" aria-label={`${label}のプリセット`}>
+        {PORTION_PRESETS.map(p => (
+          <button key={p.v} type="button" aria-pressed={total === p.v} onClick={() => onChange(p.v)} className={`px-3 py-2 rounded-full text-sm font-bold border ${total === p.v ? "bg-[var(--accent)] text-white border-transparent" : "border-[var(--border)]"}`}>{p.label}</button>
+        ))}
+      </div>
+      {/* 小数分：スライダーで0.1〜2.0を0.1刻みで調整 */}
+      <div className="mt-3">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-xs font-bold text-[var(--dim)]">小数の調整（スライダー）</span>
+          <span className="text-xs font-bold">×{formatPortion(slider)}</span>
         </div>
-      )}
+        <div className="mt-1.5 flex items-center gap-2">
+          <span className="text-[11px] text-[var(--dim)] shrink-0">0.1</span>
+          <input aria-label={`${label}のスライダー（0.1〜2.0）`} type="range" min={PORTION_SLIDER_MIN} max={PORTION_SLIDER_MAX} step="0.1" value={slider} onChange={e => setSlider(Number(e.target.value))} className="flex-1 min-w-28 accent-[#ea580c]" />
+          <span className="text-[11px] text-[var(--dim)] shrink-0">2.0</span>
+        </div>
+      </div>
+      {/* 整数分：別の項目として＋／−で増減（2食分以上はこちらで追加） */}
+      <div className="mt-3 flex items-center justify-between gap-2 rounded-xl bg-[var(--surface2)] px-3 py-2.5">
+        <div>
+          <div className="text-xs font-bold text-[var(--dim)]">整数分の追加</div>
+          <div className="text-[11px] text-[var(--dim)]">2食分以上はここで足します</div>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <button type="button" aria-label={`${label}の整数分を減らす`} disabled={extra <= 0} onClick={() => setExtra(extra - 1)} className="w-10 h-10 rounded-full bg-[var(--surface)] border border-[var(--border)] text-lg font-black shadow-sm disabled:opacity-40">−</button>
+          <span className="w-16 text-center text-sm font-black" aria-live="polite">＋{extra}食分</span>
+          <button type="button" aria-label={`${label}の整数分を増やす`} disabled={extra >= PORTION_EXTRA_MAX} onClick={() => setExtra(extra + 1)} className="w-10 h-10 rounded-full bg-[var(--surface)] border border-[var(--border)] text-lg font-black shadow-sm disabled:opacity-40">＋</button>
+        </div>
+      </div>
+      <p className="text-[11px] text-[var(--dim)] mt-2">合計の分量はスライダー（×{formatPortion(slider)}）＋整数分（{extra}食分）＝ ×{formatPortion(total)} です。</p>
     </div>
   );
 }

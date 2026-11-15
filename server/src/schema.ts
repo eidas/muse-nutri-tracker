@@ -8,7 +8,7 @@ export const meals = sqliteTable("meals", {
   fat: real("fat"),
   carbs: real("carbs"),
   mealType: text("meal_type", { enum: ["breakfast", "lunch", "dinner", "snack"] }).notNull().default("lunch"),
-  portion: real("portion").notNull().default(1), // 1食分=1、半分=0.5、1/4=0.25、3/4=0.75、自由入力0.1〜0.9
+  portion: real("portion").notNull().default(1), // 1食分=1、半分=0.5。スライダー（0.1〜2.0）と整数分の追加（＋/−）を組み合わせて0.1〜10まで指定可
   date: text("date").notNull(), // YYYY-MM-DD
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
 });
