@@ -226,6 +226,15 @@ export function App() {
   const [photoNotFood, setPhotoNotFood] = useState(false);
   const [photoPortion, setPhotoPortion] = useState(1);
   const [photoSaving, setPhotoSaving] = useState(false);
+  // 解析の取りやめ用：実行中かどうかはミューテーションの isPending ではなく
+  // 自前で管理し、runId で「今の解析」を識別する。取りやめ時は runId を進めて、
+  // 後から届いた結果を破棄する（送信済みのリクエスト自体は止められないため）。
+  const [photoAnalyzing, setPhotoAnalyzing] = useState(false);
+  const [photoSlow, setPhotoSlow] = useState(false);
+  const [photoNotice, setPhotoNotice] = useState("");
+  const photoRunRef = useRef(0);
+  const photoBase64Ref = useRef<string | null>(null);
+  const photoTimersRef = useRef<{ slow: ReturnType<typeof setTimeout> | null; limit: ReturnType<typeof setTimeout> | null }>({ slow: null, limit: null });
   const cameraInputRef = useRef<HTMLInputElement | null>(null);
   const galleryInputRef = useRef<HTMLInputElement | null>(null);
   const [editing, setEditing] = useState<Meal | null>(null);
@@ -367,9 +376,26 @@ export function App() {
     onSettled: invalidate,
   });
 
+  // ---- 写真解析の開始・取りやめ ----
+  // 送信済みの解析リクエスト自体は止められないので、取りやめはクライアント側で
+  // 結果を破棄する方式にする：runId を進めると、後から届いた応答は
+  // onSuccess / onError で無視される。あわせて90秒の見張りタイマーを置き、
+  // 応答が返らないまま固まった場合も自動で取りやめて再試行できる状態に戻す。
+  function clearPhotoTimers() {
+    if (photoTimersRef.current.slow) { clearTimeout(photoTimersRef.current.slow); photoTimersRef.current.slow = null; }
+    if (photoTimersRef.current.limit) { clearTimeout(photoTimersRef.current.limit); photoTimersRef.current.limit = null; }
+  }
+  function finishPhotoAnalysis() {
+    clearPhotoTimers();
+    setPhotoAnalyzing(false);
+    setPhotoSlow(false);
+  }
+
   const photoMut = useMutation({
-    mutationFn: (v: { base64: string }) => api.analyzeFoodPhoto({ imageBase64: v.base64, mimeType: "image/jpeg", mealType }),
-    onSuccess: (res) => {
+    mutationFn: (v: { base64: string; runId: number }) => api.analyzeFoodPhoto({ imageBase64: v.base64, mimeType: "image/jpeg", mealType }),
+    onSuccess: (res, v) => {
+      if (v.runId !== photoRunRef.current) return; // 取りやめ済みの解析結果は破棄する
+      finishPhotoAnalysis();
       if (!res.ok) {
         setPhotoError(res.error ?? "写真を解析できませんでした。撮り直してください。");
         setPhotoItems(null);
@@ -392,24 +418,64 @@ export function App() {
         selected: true,
       })));
     },
-    onError: () => { setPhotoError("写真を解析できませんでした。通信状態を確認して、もう一度お試しください。"); setPhotoItems(null); },
+    onError: (_e, v) => {
+      if (v.runId !== photoRunRef.current) return; // 取りやめ済みの解析結果は破棄する
+      finishPhotoAnalysis();
+      setPhotoError("写真を解析できませんでした。通信状態を確認して、もう一度お試しください。");
+      setPhotoItems(null);
+    },
   });
+
+  function startPhotoAnalysis(base64: string) {
+    const runId = ++photoRunRef.current;
+    clearPhotoTimers();
+    setPhotoAnalyzing(true);
+    setPhotoSlow(false);
+    setPhotoNotice("");
+    setPhotoError("");
+    // 30秒たっても終わらなければ「時間がかかっている」旨と取りやめ導線を出す
+    photoTimersRef.current.slow = setTimeout(() => { if (photoRunRef.current === runId) setPhotoSlow(true); }, 30_000);
+    // 90秒（サーバー側の解析タイムアウトと同じ）応答がなければ自動で取りやめる
+    photoTimersRef.current.limit = setTimeout(() => { if (photoRunRef.current === runId) cancelPhotoAnalysis("timeout"); }, 90_000);
+    photoMut.mutate({ base64, runId });
+  }
+
+  function cancelPhotoAnalysis(reason: "user" | "timeout") {
+    photoRunRef.current += 1; // 進行中の解析結果を無効化する
+    finishPhotoAnalysis();
+    photoMut.reset();
+    if (reason === "timeout") {
+      setPhotoError("解析に時間がかかりすぎたため取りやめました。通信状態を確認して、もう一度お試しください。");
+    } else {
+      setPhotoNotice("解析を取りやめました。選んだ写真はそのまま残っているので、撮り直しや再解析ができます。");
+    }
+  }
 
   async function handlePhotoFile(file: File) {
     setPhotoError("");
     setPhotoNotFood(false);
     setPhotoItems(null);
     setPhotoDescription("");
+    setPhotoNotice("");
     try {
       const { base64, preview } = await preparePhoto(file);
       setPhotoPreview(preview);
-      photoMut.mutate({ base64 });
+      photoBase64Ref.current = base64;
+      startPhotoAnalysis(base64);
     } catch {
       setPhotoError("写真を読み込めませんでした。別の写真でお試しください。");
     }
   }
 
   function resetPhoto() {
+    // パネルを閉じる・日付を変えるときは、進行中の解析も取りやめる
+    photoRunRef.current += 1;
+    clearPhotoTimers();
+    photoMut.reset();
+    setPhotoAnalyzing(false);
+    setPhotoSlow(false);
+    setPhotoNotice("");
+    photoBase64Ref.current = null;
     setPhotoPreview(null);
     setPhotoItems(null);
     setPhotoDescription("");
@@ -771,7 +837,7 @@ export function App() {
             {/* Add buttons */}
             <div className="grid grid-cols-2 gap-2 mt-4">
               <button onClick={() => { resetForm(); setShowForm(v => !v); }} className="rounded-2xl bg-[var(--accent)] text-white py-3.5 font-display font-black shadow text-sm">＋ 食事を記録</button>
-              <button aria-expanded={showPhoto} onClick={() => setShowPhoto(v => !v)} className="rounded-2xl bg-[var(--accent2)] text-white py-3.5 font-display font-black shadow text-sm">📸 写真で記録</button>
+              <button aria-expanded={showPhoto} onClick={() => { if (showPhoto) { resetPhoto(); setShowPhoto(false); } else { setShowPhoto(true); } }} className="rounded-2xl bg-[var(--accent2)] text-white py-3.5 font-display font-black shadow text-sm">📸 写真で記録</button>
               <button onClick={() => setShowQuick(v => !v)} className="rounded-2xl bg-[var(--surface)] border border-[var(--border)] py-3.5 font-display font-black shadow-sm text-sm">🍱 よくある食品</button>
               <button onClick={() => setShowMasters(v => !v)} className="rounded-2xl bg-[var(--surface)] border border-[var(--border)] py-3.5 font-display font-black shadow-sm text-sm">📚 マスター{day.masters.length > 0 ? `（${day.masters.length}）` : ""}</button>
             </div>
@@ -797,17 +863,28 @@ export function App() {
                   <div className="mt-3">
                     <img src={photoPreview} alt="解析する食事の写真" className="w-full max-h-60 object-cover rounded-2xl border border-[var(--border)]" />
                     <div className="flex gap-2 mt-2">
-                      <button disabled={photoMut.isPending || photoSaving} onClick={() => cameraInputRef.current?.click()} className="flex-1 rounded-xl border border-[var(--border)] py-2.5 text-sm font-bold disabled:opacity-40">📷 撮り直す</button>
-                      <button disabled={photoMut.isPending || photoSaving} onClick={() => galleryInputRef.current?.click()} className="flex-1 rounded-xl border border-[var(--border)] py-2.5 text-sm font-bold disabled:opacity-40">🖼 選び直す</button>
+                      <button disabled={photoAnalyzing || photoSaving} onClick={() => cameraInputRef.current?.click()} className="flex-1 rounded-xl border border-[var(--border)] py-2.5 text-sm font-bold disabled:opacity-40">📷 撮り直す</button>
+                      <button disabled={photoAnalyzing || photoSaving} onClick={() => galleryInputRef.current?.click()} className="flex-1 rounded-xl border border-[var(--border)] py-2.5 text-sm font-bold disabled:opacity-40">🖼 選び直す</button>
                     </div>
                   </div>
                 )}
-                {photoMut.isPending && <p aria-live="polite" className="mt-3 rounded-xl bg-[var(--surface2)] px-3 py-3 text-sm font-bold animate-pulse">AIが写真を解析中です…（10〜30秒ほどかかります）</p>}
+                {!photoAnalyzing && !photoItems && photoPreview && photoBase64Ref.current && (
+                  <button onClick={() => { const b = photoBase64Ref.current; if (b) startPhotoAnalysis(b); }} className="mt-3 w-full rounded-xl bg-[var(--accent2)] text-white py-2.5 text-sm font-bold">🔄 この写真でもう一度解析する</button>
+                )}
+                {photoAnalyzing && (
+                  <div aria-live="polite" className="mt-3 rounded-xl bg-[var(--surface2)] px-3 py-3">
+                    <p className="text-sm font-bold animate-pulse">AIが写真を解析中です…（10〜30秒ほどかかります）</p>
+                    {photoSlow && <p className="text-xs text-[var(--dim)] mt-1.5 leading-relaxed">通常より時間がかかっています。このまま待つか、解析をやめて撮り直すこともできます。</p>}
+                    <button aria-label="写真の解析をやめる" onClick={() => cancelPhotoAnalysis("user")} className="mt-2.5 w-full rounded-xl border border-red-300 bg-[var(--surface)] py-2.5 text-sm font-bold text-red-600 dark:border-red-800 dark:text-red-300">解析をやめる</button>
+                    <p className="text-[11px] text-[var(--dim)] mt-1.5 leading-relaxed">やめても選んだ写真は消えません。後から結果が届いても、自動で表示されることはありません。</p>
+                  </div>
+                )}
+                {photoNotice && !photoAnalyzing && <p aria-live="polite" className="mt-3 rounded-xl bg-[var(--surface2)] px-3 py-2.5 text-sm font-bold">{photoNotice}</p>}
                 {photoError && <p role="alert" className="mt-3 rounded-xl bg-red-50 border border-red-200 px-3 py-2.5 text-sm font-bold text-red-700 dark:bg-red-950 dark:border-red-800 dark:text-red-200">{photoError}</p>}
-                {photoNotFood && !photoMut.isPending && (
+                {photoNotFood && !photoAnalyzing && (
                   <p aria-live="polite" className="mt-3 rounded-xl bg-[var(--surface2)] px-3 py-2.5 text-sm font-bold">食べ物が写っていないようです。料理全体が写る写真でもう一度お試しください。</p>
                 )}
-                {photoItems && !photoMut.isPending && (
+                {photoItems && !photoAnalyzing && (
                   <div className="mt-3">
                     {photoDescription && <p className="text-sm font-bold leading-relaxed">{photoDescription}</p>}
                     <div className="mt-3">
@@ -851,7 +928,7 @@ export function App() {
                     })()}
                   </div>
                 )}
-                {!photoItems && !photoMut.isPending && (
+                {!photoItems && (
                   <button onClick={() => { resetPhoto(); setShowPhoto(false); }} className="mt-3 w-full rounded-xl border border-[var(--border)] py-2.5 text-sm font-bold">閉じる</button>
                 )}
               </section>
