@@ -372,6 +372,9 @@ export function App() {
       }
       return { prev, targetDate: v.targetDate };
     },
+    // 追加が成功したらクイック追加の割合（スライダー・整数分）を1食分に戻す。
+    // 戻し忘れると、次の追加も前回の割合（例：×1.8）のまま記録されてしまう。
+    onSuccess: () => { setInstantPortion(1); },
     onError: (_e, _v, ctx) => { if (ctx?.prev) qc.setQueryData(["bundle", ctx.targetDate], ctx.prev); },
     onSettled: invalidate,
   });
@@ -516,7 +519,8 @@ export function App() {
 
   const editMut = useMutation({
     mutationFn: () => api.updateMeal({ id: editing!.id, name: name.trim(), calories: Number(calories), protein: protein ? Number(protein) : null, fat: fat ? Number(fat) : null, carbs: carbs ? Number(carbs) : null, mealType, portion }),
-    onSuccess: () => { invalidate(); resetForm(); },
+    // 更新が成功したらフォームの割合（resetForm）とクイック追加の割合の両方を1食分に戻す
+    onSuccess: () => { invalidate(); resetForm(); setInstantPortion(1); },
   });
   const delMut = useMutation({
     mutationFn: (v: { id: number; targetDate: string }) => api.deleteMeal({ id: v.id }),
@@ -707,7 +711,7 @@ export function App() {
               </div>
               {masterFormError && <p className="mt-3 rounded-xl bg-red-50 border border-red-200 px-3 py-2 text-xs font-bold text-red-700 dark:bg-red-950 dark:border-red-800 dark:text-red-200">{masterFormError}</p>}
               <div className="flex gap-2 mt-4">
-                <button disabled={!mName.trim() || !mCalories || Number(mCalories) < 0 || createMasterMut.isPending || updateMasterMut.isPending} onClick={saveMaster} className="flex-1 rounded-xl bg-[var(--accent)] text-white py-3 font-bold disabled:opacity-40">{editingMaster ? "更新する" : "追加する"}</button>
+                <button disabled={!mName.trim() || !mCalories || Number(mCalories) < 0 || (editingMaster ? updateMasterMut.isPending : createMasterMut.isPending)} onClick={saveMaster} className="flex-1 rounded-xl bg-[var(--accent)] text-white py-3 font-bold disabled:opacity-40">{editingMaster ? "更新する" : "追加する"}</button>
                 <button onClick={resetMasterForm} className="rounded-xl border border-[var(--border)] px-4 py-3 text-sm font-bold">キャンセル</button>
               </div>
             </section>
@@ -1051,7 +1055,10 @@ export function App() {
                 )}
                 {(addMut.error || editMut.error) && <p className="text-xs text-red-600 mt-2">保存できませんでした。入力を確認してください。</p>}
                 <div className="flex gap-2 mt-4">
-                  <button disabled={!name.trim() || !calories || Number(calories) < 0 || addMut.isPending || editMut.isPending} onClick={() => editing ? editMut.mutate() : addMut.mutate({ name: name.trim(), calories: Number(calories), protein: protein ? Number(protein) : null, fat: fat ? Number(fat) : null, carbs: carbs ? Number(carbs) : null, mealType, portion, targetDate: date }, { onSuccess: resetForm })} className="flex-1 rounded-xl bg-[var(--accent)] text-white py-3 font-bold disabled:opacity-40">{editing ? "更新する" : "記録する"}</button>
+                  {/* 無効化は「このボタン自身の送信中」だけに限定する。以前は追加側（addMut）の
+                      実行中でも更新ボタンが無効になり、チップ追加などのリクエストが滞ると
+                      分量だけ変更しても「更新する」が押せなくなっていた。 */}
+                  <button disabled={!name.trim() || !calories || Number(calories) < 0 || (editing ? editMut.isPending : addMut.isPending)} onClick={() => editing ? editMut.mutate() : addMut.mutate({ name: name.trim(), calories: Number(calories), protein: protein ? Number(protein) : null, fat: fat ? Number(fat) : null, carbs: carbs ? Number(carbs) : null, mealType, portion, targetDate: date }, { onSuccess: resetForm })} className="flex-1 rounded-xl bg-[var(--accent)] text-white py-3 font-bold disabled:opacity-40">{editing ? "更新する" : "記録する"}</button>
                   <button onClick={resetForm} className="rounded-xl border border-[var(--border)] px-4 py-3 text-sm font-bold">キャンセル</button>
                 </div>
                 {!editing && <p className="text-[11px] text-[var(--dim)] mt-2">記録するとマスター食品に自動登録されます（重複・よく似た名前は登録されません）。</p>}
@@ -1094,8 +1101,16 @@ export function App() {
                               {(m.protein != null || m.fat != null || m.carbs != null) && <div className="text-[11px] text-[var(--dim)]">P {m.protein ?? "—"}g ・ F {m.fat ?? "—"}g ・ C {m.carbs ?? "—"}g</div>}
                             </div>
                             <span className="font-display font-black whitespace-nowrap">{m.calories.toLocaleString()}<span className="text-[10px] font-normal text-[var(--dim)]"> kcal</span></span>
-                            <button aria-label={`${m.name}を編集`} onClick={() => startEdit(m)} className="text-xs font-bold text-[var(--accent)] px-1.5 py-1">編集</button>
-                            <button aria-label={`${m.name}を削除`} onClick={() => { if (confirmDel === m.id) { delMut.mutate({ id: m.id, targetDate: m.date }); setConfirmDel(null); } else { setConfirmDel(m.id); setTimeout(() => setConfirmDel(null), 3000); } }} className={`text-xs font-bold px-1.5 py-1 rounded ${confirmDel === m.id ? "bg-red-500 text-white" : "text-red-500"}`}>{confirmDel === m.id ? "本当に削除" : "削除"}</button>
+                            {m.id < 0 ? (
+                              // 楽観的更新で表示中の未保存行（仮ID）は、サーバー保存が終わるまで
+                              // 編集・削除できない（仮IDのまま更新しても記録に反映されないため）
+                              <span className="text-[11px] font-bold text-[var(--dim)] shrink-0">保存中…</span>
+                            ) : (
+                              <>
+                                <button aria-label={`${m.name}を編集`} onClick={() => startEdit(m)} className="text-xs font-bold text-[var(--accent)] px-1.5 py-1">編集</button>
+                                <button aria-label={`${m.name}を削除`} onClick={() => { if (confirmDel === m.id) { delMut.mutate({ id: m.id, targetDate: m.date }); setConfirmDel(null); } else { setConfirmDel(m.id); setTimeout(() => setConfirmDel(null), 3000); } }} className={`text-xs font-bold px-1.5 py-1 rounded ${confirmDel === m.id ? "bg-red-500 text-white" : "text-red-500"}`}>{confirmDel === m.id ? "本当に削除" : "削除"}</button>
+                              </>
+                            )}
                           </div>
                         ))}
                       </div>
