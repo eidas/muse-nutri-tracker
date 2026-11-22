@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { SafeAreaTopScrim } from "@hatch/space-sdk/client";
+import { actionFields } from "@hatch/space-sdk/fields" with { type: "macro" };
+import type { Actions } from "../../server/src/actions";
 import { api, type ApiResponse } from "./api";
+
+const FIELDS = actionFields<typeof Actions>();
 
 type Bundle = ApiResponse<typeof api, "getDayBundle">;
 type Meal = Bundle["meals"][number];
@@ -266,6 +270,7 @@ export function App() {
   const [carbs, setCarbs] = useState("");
   const [mealType, setMealType] = useState<MealType>("lunch");
   const [portion, setPortion] = useState(1);
+  const [formError, setFormError] = useState("");
   const [instantPortion, setInstantPortion] = useState(1);
   const [goalInput, setGoalInput] = useState("");
   const [weightInput, setWeightInput] = useState("");
@@ -374,8 +379,8 @@ export function App() {
     },
     // 追加が成功したらクイック追加の割合（スライダー・整数分）を1食分に戻す。
     // 戻し忘れると、次の追加も前回の割合（例：×1.8）のまま記録されてしまう。
-    onSuccess: () => { setInstantPortion(1); },
-    onError: (_e, _v, ctx) => { if (ctx?.prev) qc.setQueryData(["bundle", ctx.targetDate], ctx.prev); },
+    onSuccess: () => { setInstantPortion(1); setFormError(""); },
+    onError: (_e, _v, ctx) => { if (ctx?.prev) qc.setQueryData(["bundle", ctx.targetDate], ctx.prev); setFormError("保存できませんでした。入力を確認してください。"); },
     onSettled: invalidate,
   });
 
@@ -490,7 +495,7 @@ export function App() {
   async function savePhotoItems() {
     if (!photoItems) return;
     const targets = photoItems.filter(it => it.selected && it.name.trim() && it.calories !== "" && !Number.isNaN(Number(it.calories)) && Number(it.calories) >= 0);
-    if (targets.length === 0) return;
+    if (targets.length === 0) { setPhotoError("記録できる品目がありません。記録したい品目にチェックを入れ、品目名とカロリーを入力してください。"); return; }
     setPhotoSaving(true);
     // 保存開始時点の日付を記録先として固定する（保存中に日付が変わっても
     // 別の日に記録されないように）
@@ -521,6 +526,7 @@ export function App() {
     mutationFn: () => api.updateMeal({ id: editing!.id, name: name.trim(), calories: Number(calories), protein: protein ? Number(protein) : null, fat: fat ? Number(fat) : null, carbs: carbs ? Number(carbs) : null, mealType, portion }),
     // 更新が成功したらフォームの割合（resetForm）とクイック追加の割合の両方を1食分に戻す
     onSuccess: () => { invalidate(); resetForm(); setInstantPortion(1); },
+    onError: () => setFormError("保存できませんでした。入力を確認してください。"),
   });
   const delMut = useMutation({
     mutationFn: (v: { id: number; targetDate: string }) => api.deleteMeal({ id: v.id }),
@@ -588,8 +594,8 @@ export function App() {
   function startEditMaster(m: Master) { setEditingMaster(m); setMName(m.name); setMCalories(String(m.calories)); setMProtein(m.protein != null ? String(m.protein) : ""); setMFat(m.fat != null ? String(m.fat) : ""); setMCarbs(m.carbs != null ? String(m.carbs) : ""); setMMealType(m.lastMealType); setShowMasterForm(true); setMasterFormError(""); window.scrollTo({ top: 0, behavior: "smooth" }); }
   function saveMaster() { if (editingMaster) updateMasterMut.mutate(); else createMasterMut.mutate(); }
 
-  function resetForm() { setName(""); setCalories(""); setProtein(""); setFat(""); setCarbs(""); setPortion(1); setEditing(null); setShowForm(false); setSuggestOpen(false); }
-  function startEdit(m: Meal) { const p = m.portion ?? 1; setEditing(m); setName(m.name); setPortion(p); setCalories(String(unscaleKcal(m.calories, p))); setProtein(m.protein != null ? String(unscaleMacro(m.protein, p) ?? "") : ""); setFat(m.fat != null ? String(unscaleMacro(m.fat, p) ?? "") : ""); setCarbs(m.carbs != null ? String(unscaleMacro(m.carbs, p) ?? "") : ""); setMealType(m.mealType); setShowForm(true); setSuggestOpen(false); window.scrollTo({ top: 0, behavior: "smooth" }); }
+  function resetForm() { setName(""); setCalories(""); setProtein(""); setFat(""); setCarbs(""); setPortion(1); setEditing(null); setShowForm(false); setSuggestOpen(false); setFormError(""); }
+  function startEdit(m: Meal) { const p = m.portion ?? 1; setEditing(m); setName(m.name); setPortion(p); setFormError(""); setCalories(String(unscaleKcal(m.calories, p))); setProtein(m.protein != null ? String(unscaleMacro(m.protein, p) ?? "") : ""); setFat(m.fat != null ? String(unscaleMacro(m.fat, p) ?? "") : ""); setCarbs(m.carbs != null ? String(unscaleMacro(m.carbs, p) ?? "") : ""); setMealType(m.mealType); setShowForm(true); setSuggestOpen(false); window.scrollTo({ top: 0, behavior: "smooth" }); }
 
   function addRecent(item: RecentItem, t: MealType) {
     addMut.mutate({ name: item.name, calories: item.calories, protein: item.protein, fat: item.fat, carbs: item.carbs, mealType: t, portion: instantPortion, targetDate: date });
@@ -701,13 +707,13 @@ export function App() {
                 </div>
               </div>
               <label className="block mt-3 text-xs font-bold text-[var(--dim)]" htmlFor="master-name">食品名 *</label>
-              <input id="master-name" value={mName} onChange={e => setMName(e.target.value)} placeholder="例：プロテイン 50g" className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2.5 text-sm" autoComplete="off" />
+              <input id="master-name" {...FIELDS.createMaster.name} value={mName} onChange={e => setMName(e.target.value)} placeholder="例：プロテイン 50g" className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2.5 text-sm" autoComplete="off" />
               <label className="block mt-3 text-xs font-bold text-[var(--dim)]" htmlFor="master-cal">カロリー（kcal）* ― 1食分の値</label>
-              <input id="master-cal" type="number" inputMode="numeric" value={mCalories} onChange={e => setMCalories(e.target.value)} placeholder="例：200" className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2.5 text-sm" />
+              <input id="master-cal" {...FIELDS.createMaster.calories} inputMode="numeric" value={mCalories} onChange={e => setMCalories(e.target.value)} placeholder="例：200" className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2.5 text-sm" />
               <div className="grid grid-cols-3 gap-2 mt-3">
-                <div><label className="block whitespace-nowrap text-xs font-bold text-[var(--dim)]" htmlFor="mf-p">たんぱく質 g<span className="text-[10px] font-normal">（1食分）</span></label><input id="mf-p" type="number" inputMode="decimal" value={mProtein} onChange={e => setMProtein(e.target.value)} placeholder="任意" className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-2 py-2.5 text-sm" /></div>
-                <div><label className="block whitespace-nowrap text-xs font-bold text-[var(--dim)]" htmlFor="mf-f">脂質 g<span className="text-[10px] font-normal">（1食分）</span></label><input id="mf-f" type="number" inputMode="decimal" value={mFat} onChange={e => setMFat(e.target.value)} placeholder="任意" className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-2 py-2.5 text-sm" /></div>
-                <div><label className="block whitespace-nowrap text-xs font-bold text-[var(--dim)]" htmlFor="mf-c">炭水化物 g<span className="text-[10px] font-normal">（1食分）</span></label><input id="mf-c" type="number" inputMode="decimal" value={mCarbs} onChange={e => setMCarbs(e.target.value)} placeholder="任意" className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-2 py-2.5 text-sm" /></div>
+                <div><label className="block whitespace-nowrap text-xs font-bold text-[var(--dim)]" htmlFor="mf-p">たんぱく質 g<span className="text-[10px] font-normal">（1食分）</span></label><input id="mf-p" {...FIELDS.createMaster.protein} inputMode="decimal" value={mProtein} onChange={e => setMProtein(e.target.value)} placeholder="任意" className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-2 py-2.5 text-sm" /></div>
+                <div><label className="block whitespace-nowrap text-xs font-bold text-[var(--dim)]" htmlFor="mf-f">脂質 g<span className="text-[10px] font-normal">（1食分）</span></label><input id="mf-f" {...FIELDS.createMaster.fat} inputMode="decimal" value={mFat} onChange={e => setMFat(e.target.value)} placeholder="任意" className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-2 py-2.5 text-sm" /></div>
+                <div><label className="block whitespace-nowrap text-xs font-bold text-[var(--dim)]" htmlFor="mf-c">炭水化物 g<span className="text-[10px] font-normal">（1食分）</span></label><input id="mf-c" {...FIELDS.createMaster.carbs} inputMode="decimal" value={mCarbs} onChange={e => setMCarbs(e.target.value)} placeholder="任意" className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-2 py-2.5 text-sm" /></div>
               </div>
               {masterFormError && <p className="mt-3 rounded-xl bg-red-50 border border-red-200 px-3 py-2 text-xs font-bold text-red-700 dark:bg-red-950 dark:border-red-800 dark:text-red-200">{masterFormError}</p>}
               <div className="flex gap-2 mt-4">
@@ -832,7 +838,7 @@ export function App() {
               <button onClick={() => { setGoalInput(String(day.dailyGoal)); setShowGoal(v => !v); }} className="mt-3 w-full text-center text-xs font-bold text-[var(--accent)] py-2">目標カロリーを変更する（現在 {day.dailyGoal.toLocaleString()} kcal）</button>
               {showGoal && (
                 <div className="flex gap-2 mt-1">
-                  <input aria-label="目標カロリー" type="number" inputMode="numeric" value={goalInput} onChange={e => setGoalInput(e.target.value)} className="flex-1 rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2.5 text-sm" placeholder="例：2000" />
+                  <input aria-label="目標カロリー" {...FIELDS.updateGoal.dailyGoal} inputMode="numeric" value={goalInput} onChange={e => setGoalInput(e.target.value)} className="flex-1 rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2.5 text-sm" placeholder="例：2000" />
                   <button disabled={!goalInput || Number(goalInput) < 500} onClick={() => goalMut.mutate()} className="rounded-xl bg-[var(--accent)] text-white px-4 py-2.5 text-sm font-bold disabled:opacity-40">保存</button>
                 </div>
               )}
@@ -901,12 +907,12 @@ export function App() {
                             <input aria-label={`${it.name || "品目"}を記録対象にする`} type="checkbox" checked={it.selected} onChange={e => setPhotoItems(prev => prev ? prev.map(x => x.key === it.key ? { ...x, selected: e.target.checked } : x) : prev)} className="mt-2.5 w-5 h-5 shrink-0 accent-[#15803d]" />
                             <div className="flex-1 min-w-0">
                               <label className="block text-[11px] font-bold text-[var(--dim)]" htmlFor={`photo-name-${it.key}`}>品目名（1食分の推定）</label>
-                              <input id={`photo-name-${it.key}`} value={it.name} onChange={e => setPhotoItems(prev => prev ? prev.map(x => x.key === it.key ? { ...x, name: e.target.value } : x) : prev)} className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm font-bold" autoComplete="off" />
+                              <input id={`photo-name-${it.key}`} {...FIELDS.addMeal.name} value={it.name} onChange={e => setPhotoItems(prev => prev ? prev.map(x => x.key === it.key ? { ...x, name: e.target.value } : x) : prev)} className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm font-bold" autoComplete="off" />
                               <div className="grid grid-cols-4 gap-1.5 mt-2">
-                                <div><label className="block text-[10px] font-bold text-[var(--dim)]" htmlFor={`photo-cal-${it.key}`}>kcal</label><input id={`photo-cal-${it.key}`} type="number" inputMode="numeric" value={it.calories} onChange={e => setPhotoItems(prev => prev ? prev.map(x => x.key === it.key ? { ...x, calories: e.target.value } : x) : prev)} className="mt-0.5 w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-1.5 py-2 text-sm" /></div>
-                                <div><label className="block whitespace-nowrap text-[10px] font-bold text-[var(--dim)]" htmlFor={`photo-p-${it.key}`}>P g</label><input id={`photo-p-${it.key}`} type="number" inputMode="decimal" value={it.protein} onChange={e => setPhotoItems(prev => prev ? prev.map(x => x.key === it.key ? { ...x, protein: e.target.value } : x) : prev)} placeholder="—" className="mt-0.5 w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-1.5 py-2 text-sm" /></div>
-                                <div><label className="block whitespace-nowrap text-[10px] font-bold text-[var(--dim)]" htmlFor={`photo-f-${it.key}`}>F g</label><input id={`photo-f-${it.key}`} type="number" inputMode="decimal" value={it.fat} onChange={e => setPhotoItems(prev => prev ? prev.map(x => x.key === it.key ? { ...x, fat: e.target.value } : x) : prev)} placeholder="—" className="mt-0.5 w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-1.5 py-2 text-sm" /></div>
-                                <div><label className="block whitespace-nowrap text-[10px] font-bold text-[var(--dim)]" htmlFor={`photo-c-${it.key}`}>C g</label><input id={`photo-c-${it.key}`} type="number" inputMode="decimal" value={it.carbs} onChange={e => setPhotoItems(prev => prev ? prev.map(x => x.key === it.key ? { ...x, carbs: e.target.value } : x) : prev)} placeholder="—" className="mt-0.5 w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-1.5 py-2 text-sm" /></div>
+                                <div><label className="block text-[10px] font-bold text-[var(--dim)]" htmlFor={`photo-cal-${it.key}`}>kcal</label><input id={`photo-cal-${it.key}`} {...FIELDS.addMeal.calories} inputMode="numeric" value={it.calories} onChange={e => setPhotoItems(prev => prev ? prev.map(x => x.key === it.key ? { ...x, calories: e.target.value } : x) : prev)} className="mt-0.5 w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-1.5 py-2 text-sm" /></div>
+                                <div><label className="block whitespace-nowrap text-[10px] font-bold text-[var(--dim)]" htmlFor={`photo-p-${it.key}`}>P g</label><input id={`photo-p-${it.key}`} {...FIELDS.addMeal.protein} inputMode="decimal" value={it.protein} onChange={e => setPhotoItems(prev => prev ? prev.map(x => x.key === it.key ? { ...x, protein: e.target.value } : x) : prev)} placeholder="—" className="mt-0.5 w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-1.5 py-2 text-sm" /></div>
+                                <div><label className="block whitespace-nowrap text-[10px] font-bold text-[var(--dim)]" htmlFor={`photo-f-${it.key}`}>F g</label><input id={`photo-f-${it.key}`} {...FIELDS.addMeal.fat} inputMode="decimal" value={it.fat} onChange={e => setPhotoItems(prev => prev ? prev.map(x => x.key === it.key ? { ...x, fat: e.target.value } : x) : prev)} placeholder="—" className="mt-0.5 w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-1.5 py-2 text-sm" /></div>
+                                <div><label className="block whitespace-nowrap text-[10px] font-bold text-[var(--dim)]" htmlFor={`photo-c-${it.key}`}>C g</label><input id={`photo-c-${it.key}`} {...FIELDS.addMeal.carbs} inputMode="decimal" value={it.carbs} onChange={e => setPhotoItems(prev => prev ? prev.map(x => x.key === it.key ? { ...x, carbs: e.target.value } : x) : prev)} placeholder="—" className="mt-0.5 w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-1.5 py-2 text-sm" /></div>
                               </div>
                               {it.selected && it.calories !== "" && !Number.isNaN(Number(it.calories)) && photoPortion !== 1 && (
                                 <p className="text-[11px] text-[var(--dim)] mt-1.5">記録される量：{portionLabel(photoPortion)} ＝ {scaleKcal(Number(it.calories), photoPortion).toLocaleString()} kcal</p>
@@ -937,12 +943,6 @@ export function App() {
                 )}
               </section>
             )}
-            {/* クイック追加（よくある食品・マスター・履歴チップ）で使う割合 */}
-            <section className="mt-3 rounded-2xl bg-[var(--surface)] border border-[var(--border)] p-3">
-              <PortionSelector label="クイック追加の割合（1食分が基準）" value={instantPortion} onChange={setInstantPortion} />
-              <p className="text-[11px] text-[var(--dim)] mt-2">「よくある食品」「マスター」「最近の履歴」からタップで追加するときは、この割合でカロリー・PFCが換算されます。既定は1食分です。</p>
-            </section>
-
             {showQuick && (
               <section className="mt-3 rounded-2xl bg-[var(--surface)] border border-[var(--border)] p-3">
                 <div className="flex gap-1.5 mb-3 flex-wrap">
@@ -950,7 +950,11 @@ export function App() {
                     <button key={t} onClick={() => setMealType(t)} className={`px-3 py-1.5 rounded-full text-xs font-bold border ${mealType === t ? "bg-[var(--accent)] text-white border-transparent" : "border-[var(--border)]"}`}>{MEAL_LABEL[t].emoji} {MEAL_LABEL[t].label}に追加</button>
                   ))}
                 </div>
-                <p className="text-xs font-bold mb-2">割合：{portionLabel(instantPortion)}{instantPortion !== 1 ? `（表示は換算後のカロリー）` : ""}</p>
+                {/* 数量（割合）の調整は追加パネルの内側に置く。マスター追加・履歴チップと共通の割合 */}
+                <div className="mb-3 rounded-xl bg-[var(--surface2)] px-3 py-3">
+                  <PortionSelector label="追加する割合（1食分が基準）" value={instantPortion} onChange={setInstantPortion} />
+                  <p className="text-[11px] text-[var(--dim)] mt-2">タップで追加するときは、この割合でカロリー・PFCが換算されます。マスターからの追加・最近の履歴チップにも同じ割合が使われます。</p>
+                </div>
                 <div className="grid sm:grid-cols-2 gap-1.5">
                   {QUICK_FOODS.map(f => (
                     <button key={f.name} onClick={() => addQuick(f, mealType)} className="flex justify-between items-center text-left rounded-xl bg-[var(--surface2)] px-3 py-2.5 hover:opacity-80">
@@ -969,6 +973,11 @@ export function App() {
                   {(Object.keys(MEAL_LABEL) as MealType[]).map(t => (
                     <button key={t} onClick={() => setMealType(t)} className={`px-3 py-1.5 rounded-full text-xs font-bold border ${mealType === t ? "bg-[var(--accent)] text-white border-transparent" : "border-[var(--border)]"}`}>{MEAL_LABEL[t].emoji} {MEAL_LABEL[t].label}に追加</button>
                   ))}
+                </div>
+                {/* 数量（割合）の調整は追加パネルの内側に置く。よくある食品・履歴チップと共通の割合 */}
+                <div className="mb-3 rounded-xl bg-[var(--surface2)] px-3 py-3">
+                  <PortionSelector label="追加する割合（1食分が基準）" value={instantPortion} onChange={setInstantPortion} />
+                  <p className="text-[11px] text-[var(--dim)] mt-2">タップで追加するときは、この割合でカロリー・PFCが換算されます。よくある食品・最近の履歴チップにも同じ割合が使われます。</p>
                 </div>
                 <input aria-label="マスター食品を検索" value={masterQuery} onChange={e => setMasterQuery(e.target.value)} placeholder="マスター食品を検索…" className="w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2.5 text-sm mb-2" />
                 {day.masters.length === 0 ? (
@@ -1023,7 +1032,7 @@ export function App() {
                 )}
                 <label className="block mt-3 text-xs font-bold text-[var(--dim)]" htmlFor="food-name">食品名 *</label>
                 <div className="relative">
-                  <input id="food-name" value={name} onChange={e => { setName(e.target.value); setSuggestOpen(true); }} onFocus={() => setSuggestOpen(true)} placeholder="例：鶏の照り焼き定食" className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2.5 text-sm" autoComplete="off" />
+                  <input id="food-name" {...FIELDS.addMeal.name} value={name} onChange={e => { setName(e.target.value); setSuggestOpen(true); }} onFocus={() => setSuggestOpen(true)} placeholder="例：鶏の照り焼き定食" className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2.5 text-sm" autoComplete="off" />
                   {suggestOpen && !editing && suggestions.length > 0 && name.trim().length > 0 && (
                     <div className="absolute left-0 right-0 top-full z-20 mt-1 rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-lg overflow-hidden">
                       {suggestions.map(s => (
@@ -1039,11 +1048,11 @@ export function App() {
                   )}
                 </div>
                 <label className="block mt-3 text-xs font-bold text-[var(--dim)]" htmlFor="food-cal">カロリー（kcal）* ― 1食分の値</label>
-                <input id="food-cal" type="number" inputMode="numeric" value={calories} onChange={e => setCalories(e.target.value)} placeholder="例：650" className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2.5 text-sm" />
+                <input id="food-cal" {...FIELDS.addMeal.calories} inputMode="numeric" value={calories} onChange={e => setCalories(e.target.value)} placeholder="例：650" className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2.5 text-sm" />
                 <div className="grid grid-cols-3 gap-2 mt-3">
-                  <div><label className="block whitespace-nowrap text-xs font-bold text-[var(--dim)]" htmlFor="f-p">たんぱく質 g<span className="text-[10px] font-normal">（1食分）</span></label><input id="f-p" type="number" inputMode="decimal" value={protein} onChange={e => setProtein(e.target.value)} placeholder="任意" className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-2 py-2.5 text-sm" /></div>
-                  <div><label className="block whitespace-nowrap text-xs font-bold text-[var(--dim)]" htmlFor="f-f">脂質 g<span className="text-[10px] font-normal">（1食分）</span></label><input id="f-f" type="number" inputMode="decimal" value={fat} onChange={e => setFat(e.target.value)} placeholder="任意" className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-2 py-2.5 text-sm" /></div>
-                  <div><label className="block whitespace-nowrap text-xs font-bold text-[var(--dim)]" htmlFor="f-c">炭水化物 g<span className="text-[10px] font-normal">（1食分）</span></label><input id="f-c" type="number" inputMode="decimal" value={carbs} onChange={e => setCarbs(e.target.value)} placeholder="任意" className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-2 py-2.5 text-sm" /></div>
+                  <div><label className="block whitespace-nowrap text-xs font-bold text-[var(--dim)]" htmlFor="f-p">たんぱく質 g<span className="text-[10px] font-normal">（1食分）</span></label><input id="f-p" {...FIELDS.addMeal.protein} inputMode="decimal" value={protein} onChange={e => setProtein(e.target.value)} placeholder="任意" className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-2 py-2.5 text-sm" /></div>
+                  <div><label className="block whitespace-nowrap text-xs font-bold text-[var(--dim)]" htmlFor="f-f">脂質 g<span className="text-[10px] font-normal">（1食分）</span></label><input id="f-f" {...FIELDS.addMeal.fat} inputMode="decimal" value={fat} onChange={e => setFat(e.target.value)} placeholder="任意" className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-2 py-2.5 text-sm" /></div>
+                  <div><label className="block whitespace-nowrap text-xs font-bold text-[var(--dim)]" htmlFor="f-c">炭水化物 g<span className="text-[10px] font-normal">（1食分）</span></label><input id="f-c" {...FIELDS.addMeal.carbs} inputMode="decimal" value={carbs} onChange={e => setCarbs(e.target.value)} placeholder="任意" className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-2 py-2.5 text-sm" /></div>
                 </div>
                 {calories && !Number.isNaN(Number(calories)) && (
                   <p className="mt-3 rounded-xl bg-[var(--surface2)] px-3 py-2.5 text-sm font-bold" aria-live="polite">
@@ -1053,7 +1062,7 @@ export function App() {
                     {portion !== 1 && (protein || fat || carbs) ? <span className="block text-[11px] font-normal text-[var(--dim)] mt-0.5">P {protein ? scaleMacro(Number(protein), portion) : "—"}g ・ F {fat ? scaleMacro(Number(fat), portion) : "—"}g ・ C {carbs ? scaleMacro(Number(carbs), portion) : "—"}g で記録されます</span> : null}
                   </p>
                 )}
-                {(addMut.error || editMut.error) && <p className="text-xs text-red-600 mt-2">保存できませんでした。入力を確認してください。</p>}
+                {formError && <p role="alert" className="text-xs text-red-600 mt-2">{formError}</p>}
                 <div className="flex gap-2 mt-4">
                   {/* 無効化は「このボタン自身の送信中」だけに限定する。以前は追加側（addMut）の
                       実行中でも更新ボタンが無効になり、チップ追加などのリクエストが滞ると
@@ -1153,7 +1162,7 @@ export function App() {
               </div>
               {showWeightForm && (
                 <div className="flex gap-2 mt-3">
-                  <input aria-label="体重 kg" type="number" inputMode="decimal" step="0.1" value={weightInput} onChange={e => setWeightInput(e.target.value)} placeholder="例：65.5" className="flex-1 rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2.5 text-sm" />
+                  <input aria-label="体重 kg" {...FIELDS.addWeight.weight} inputMode="decimal" value={weightInput} onChange={e => setWeightInput(e.target.value)} placeholder="例：65.5" className="flex-1 rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2.5 text-sm" />
                   <span className="self-center text-sm text-[var(--dim)]">kg</span>
                   <button disabled={!weightInput} onClick={() => weightMut.mutate({ weight: Number(weightInput), targetDate: date })} className="rounded-xl bg-[var(--accent2)] text-white px-4 py-2.5 text-sm font-bold disabled:opacity-40">記録</button>
                 </div>
