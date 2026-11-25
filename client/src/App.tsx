@@ -20,23 +20,25 @@ const MEAL_LABEL: Record<MealType, { label: string; emoji: string; color: string
   snack: { label: "間食", emoji: "🍪", color: "#15803d" },
 };
 
-const QUICK_FOODS: { name: string; kcal: number; p: number; f: number; c: number }[] = [
-  { name: "ごはん（茶碗1杯 150g）", kcal: 234, p: 3.8, f: 0.5, c: 55.7 },
-  { name: "食パン（6枚切り1枚）", kcal: 149, p: 5.3, f: 2.5, c: 26.6 },
-  { name: "おにぎり（鮭）", kcal: 180, p: 4.5, f: 1.2, c: 37 },
-  { name: "ゆで卵 1個", kcal: 76, p: 6.2, f: 5.2, c: 0.2 },
-  { name: "納豆 1パック", kcal: 100, p: 8.3, f: 5.0, c: 6.1 },
-  { name: "鶏むね肉 100g（皮なし）", kcal: 116, p: 23.3, f: 1.9, c: 0.1 },
-  { name: "サラダチキン", kcal: 114, p: 21.7, f: 1.7, c: 0.3 },
-  { name: "味噌汁 1杯", kcal: 34, p: 2.1, f: 1.0, c: 4.2 },
-  { name: "うどん 1玉", kcal: 256, p: 6.5, f: 0.9, c: 55 },
-  { name: "そば 1玉", kcal: 228, p: 9.6, f: 1.5, c: 44 },
-  { name: "ラーメン 1杯", kcal: 450, p: 18, f: 12, c: 65 },
-  { name: "カレーライス 1皿", kcal: 750, p: 18, f: 28, c: 105 },
-  { name: "牛丼（並）", kcal: 650, p: 22, f: 22, c: 88 },
-  { name: "バナナ 1本", kcal: 93, p: 1.1, f: 0.2, c: 24 },
-  { name: "ヨーグルト 100g", kcal: 62, p: 3.6, f: 3.0, c: 5.0 },
-  { name: "プロテイン 1杯", kcal: 110, p: 21, f: 1.0, c: 4.0 },
+// よくある食品のクイック追加用カタログ。値は一般的な目安（推定）で、
+// 食塩相当量は材料・味付けからの推定値。追加時は推定フラグ付きで記録される。
+const QUICK_FOODS: { name: string; kcal: number; p: number; f: number; c: number; salt: number }[] = [
+  { name: "ごはん（茶碗1杯 150g）", kcal: 234, p: 3.8, f: 0.5, c: 55.7, salt: 0 },
+  { name: "食パン（6枚切り1枚）", kcal: 149, p: 5.3, f: 2.5, c: 26.6, salt: 0.8 },
+  { name: "おにぎり（鮭）", kcal: 180, p: 4.5, f: 1.2, c: 37, salt: 1.0 },
+  { name: "ゆで卵 1個", kcal: 76, p: 6.2, f: 5.2, c: 0.2, salt: 0.1 },
+  { name: "納豆 1パック", kcal: 100, p: 8.3, f: 5.0, c: 6.1, salt: 0.7 },
+  { name: "鶏むね肉 100g（皮なし）", kcal: 116, p: 23.3, f: 1.9, c: 0.1, salt: 0.1 },
+  { name: "サラダチキン", kcal: 114, p: 21.7, f: 1.7, c: 0.3, salt: 1.1 },
+  { name: "味噌汁 1杯", kcal: 34, p: 2.1, f: 1.0, c: 4.2, salt: 1.8 },
+  { name: "うどん 1玉", kcal: 256, p: 6.5, f: 0.9, c: 55, salt: 2.5 },
+  { name: "そば 1玉", kcal: 228, p: 9.6, f: 1.5, c: 44, salt: 2.0 },
+  { name: "ラーメン 1杯", kcal: 450, p: 18, f: 12, c: 65, salt: 5.5 },
+  { name: "カレーライス 1皿", kcal: 750, p: 18, f: 28, c: 105, salt: 3.0 },
+  { name: "牛丼（並）", kcal: 650, p: 22, f: 22, c: 88, salt: 2.7 },
+  { name: "バナナ 1本", kcal: 93, p: 1.1, f: 0.2, c: 24, salt: 0 },
+  { name: "ヨーグルト 100g", kcal: 62, p: 3.6, f: 3.0, c: 5.0, salt: 0.1 },
+  { name: "プロテイン 1杯", kcal: 110, p: 21, f: 1.0, c: 4.0, salt: 0.3 },
 ];
 
 function formatPortion(p: number): string {
@@ -59,6 +61,25 @@ function unscaleKcal(scaled: number, portion: number): number {
 function unscaleMacro(v: number | null, portion: number): number | null {
   if (v == null || !portion || portion === 1) return v;
   return Math.round((v / portion) * 10) / 10;
+}
+// 食塩相当量の表示（小数1桁）。0 は「0g」、未記録は呼び出し側で出し分ける。
+function fmtSalt(v: number): string {
+  return String(Math.round(v * 10) / 10);
+}
+// 食塩が記録されている食事だけを合計する（未記録は含めない）
+function saltTotalOf(meals: Meal[]): number {
+  return Math.round(meals.reduce((s, m) => s + (m.salt ?? 0), 0) * 10) / 10;
+}
+
+// 推定フラグのバッジ。カロリー・PFC用と食塩用は別々に表示する。
+function EstimateBadges({ nutritionEstimated, saltEstimated, salt }: { nutritionEstimated: boolean; saltEstimated: boolean; salt: number | null }) {
+  if (!nutritionEstimated && !(saltEstimated && salt != null)) return null;
+  return (
+    <span className="inline-flex gap-1 ml-1.5 align-middle">
+      {nutritionEstimated && <span className="rounded-full bg-amber-100 border border-amber-300 px-1.5 py-0.5 text-[10px] font-bold text-amber-800 dark:bg-amber-950 dark:border-amber-700 dark:text-amber-200">カロリー・PFC 推定</span>}
+      {saltEstimated && salt != null && <span className="rounded-full bg-sky-100 border border-sky-300 px-1.5 py-0.5 text-[10px] font-bold text-sky-800 dark:bg-sky-950 dark:border-sky-700 dark:text-sky-200">食塩 推定</span>}
+    </span>
+  );
 }
 
 const PORTION_PRESETS: { v: number; label: string }[] = [
@@ -168,6 +189,8 @@ type PhotoItem = {
   protein: string;
   fat: string;
   carbs: string;
+  salt: string;
+  saltEstimated: boolean;
   selected: boolean;
 };
 
@@ -211,6 +234,7 @@ function Ring({ value, goal }: { value: number; goal: number }) {
 type AddVars = {
   name: string; calories: number;
   protein: number | null; fat: number | null; carbs: number | null;
+  salt: number | null; nutritionEstimated: boolean; saltEstimated: boolean;
   mealType: MealType; masterId?: number; portion: number;
   // 記録先の日付はミューテーション変数として明示的に保持する。
   // 画面の date 状態をクロージャで参照すると、通信中に日付を移動した際に
@@ -258,6 +282,9 @@ export function App() {
   const [mProtein, setMProtein] = useState("");
   const [mFat, setMFat] = useState("");
   const [mCarbs, setMCarbs] = useState("");
+  const [mSalt, setMSalt] = useState("");
+  const [mNutritionEstimated, setMNutritionEstimated] = useState(false);
+  const [mSaltEstimated, setMSaltEstimated] = useState(false);
   const [mMealType, setMMealType] = useState<MealType>("lunch");
   const [masterFormError, setMasterFormError] = useState("");
   const [masterToast, setMasterToast] = useState("");
@@ -268,6 +295,10 @@ export function App() {
   const [protein, setProtein] = useState("");
   const [fat, setFat] = useState("");
   const [carbs, setCarbs] = useState("");
+  const [salt, setSalt] = useState("");
+  const [nutritionEstimated, setNutritionEstimated] = useState(false);
+  const [saltEstimated, setSaltEstimated] = useState(false);
+  const [saltBasis, setSaltBasis] = useState("");
   const [mealType, setMealType] = useState<MealType>("lunch");
   const [portion, setPortion] = useState(1);
   const [formError, setFormError] = useState("");
@@ -354,7 +385,7 @@ export function App() {
   const addMut = useMutation({
     mutationFn: (v: AddVars) => v.masterId != null
       ? api.addMealFromMaster({ masterId: v.masterId, mealType: v.mealType, portion: v.portion, date: v.targetDate })
-      : api.addMeal({ name: v.name, calories: v.calories, protein: v.protein, fat: v.fat, carbs: v.carbs, mealType: v.mealType, portion: v.portion, date: v.targetDate }),
+      : api.addMeal({ name: v.name, calories: v.calories, protein: v.protein, fat: v.fat, carbs: v.carbs, salt: v.salt, nutritionEstimated: v.nutritionEstimated, saltEstimated: v.saltEstimated, mealType: v.mealType, portion: v.portion, date: v.targetDate }),
     onMutate: async (v) => {
       const key = ["bundle", v.targetDate] as const;
       await qc.cancelQueries({ queryKey: key });
@@ -364,6 +395,7 @@ export function App() {
         const temp: Meal = {
           id: tempIdRef.current--, name: v.name, calories: scaleKcal(v.calories, v.portion),
           protein: scaleMacro(v.protein, v.portion), fat: scaleMacro(v.fat, v.portion), carbs: scaleMacro(v.carbs, v.portion),
+          salt: scaleMacro(v.salt, v.portion), nutritionEstimated: v.nutritionEstimated, saltEstimated: v.salt != null && v.saltEstimated,
           mealType: v.mealType, portion: v.portion, date: v.targetDate, created_at: new Date().toISOString(),
         };
         const meals = [...prev.meals, temp];
@@ -373,6 +405,8 @@ export function App() {
           totalProtein: Math.round(meals.reduce((s, m) => s + (m.protein ?? 0), 0) * 10) / 10,
           totalFat: Math.round(meals.reduce((s, m) => s + (m.fat ?? 0), 0) * 10) / 10,
           totalCarbs: Math.round(meals.reduce((s, m) => s + (m.carbs ?? 0), 0) * 10) / 10,
+          totalSalt: saltTotalOf(meals),
+          saltRecordedCount: meals.filter(m => m.salt != null).length,
         });
       }
       return { prev, targetDate: v.targetDate };
@@ -423,6 +457,8 @@ export function App() {
         protein: it.protein != null ? String(it.protein) : "",
         fat: it.fat != null ? String(it.fat) : "",
         carbs: it.carbs != null ? String(it.carbs) : "",
+        salt: it.salt != null ? String(it.salt) : "",
+        saltEstimated: it.saltEstimated,
         selected: true,
       })));
     },
@@ -508,6 +544,12 @@ export function App() {
           protein: it.protein ? Number(it.protein) : null,
           fat: it.fat ? Number(it.fat) : null,
           carbs: it.carbs ? Number(it.carbs) : null,
+          // 写真解析の値はすべて推定。カロリー・PFCは常に推定フラグを立て、
+          // 食塩は「成分からの推定」かどうかを品目ごとに引き継ぐ（ラベルで
+          // 読み取れた値は推定にしない）。
+          salt: it.salt !== "" && !Number.isNaN(Number(it.salt)) ? Number(it.salt) : null,
+          nutritionEstimated: true,
+          saltEstimated: it.saltEstimated,
           mealType,
           portion: photoPortion,
           targetDate,
@@ -523,7 +565,7 @@ export function App() {
   }
 
   const editMut = useMutation({
-    mutationFn: () => api.updateMeal({ id: editing!.id, name: name.trim(), calories: Number(calories), protein: protein ? Number(protein) : null, fat: fat ? Number(fat) : null, carbs: carbs ? Number(carbs) : null, mealType, portion }),
+    mutationFn: () => api.updateMeal({ id: editing!.id, name: name.trim(), calories: Number(calories), protein: protein ? Number(protein) : null, fat: fat ? Number(fat) : null, carbs: carbs ? Number(carbs) : null, salt: salt !== "" && !Number.isNaN(Number(salt)) ? Number(salt) : null, nutritionEstimated, saltEstimated, mealType, portion }),
     // 更新が成功したらフォームの割合（resetForm）とクイック追加の割合の両方を1食分に戻す
     onSuccess: () => { invalidate(); resetForm(); setInstantPortion(1); },
     onError: () => setFormError("保存できませんでした。入力を確認してください。"),
@@ -542,12 +584,40 @@ export function App() {
           totalProtein: Math.round(meals.reduce((s, m) => s + (m.protein ?? 0), 0) * 10) / 10,
           totalFat: Math.round(meals.reduce((s, m) => s + (m.fat ?? 0), 0) * 10) / 10,
           totalCarbs: Math.round(meals.reduce((s, m) => s + (m.carbs ?? 0), 0) * 10) / 10,
+          totalSalt: saltTotalOf(meals),
+          saltRecordedCount: meals.filter(m => m.salt != null).length,
         });
       }
       return { prev, targetDate: v.targetDate };
     },
     onError: (_e, _v, ctx) => { if (ctx?.prev) qc.setQueryData(["bundle", ctx.targetDate], ctx.prev); },
     onSettled: invalidate,
+  });
+  // 食塩相当量が不明なとき、材料・調味料からAIに推定させる（食事フォーム用）。
+  // 成功したら値をセットし、食塩の推定フラグを自動でONにする。
+  const [saltEstError, setSaltEstError] = useState("");
+  const saltEstMut = useMutation({
+    mutationFn: (foodName: string) => api.estimateSalt({ name: foodName }),
+    onSuccess: (res) => {
+      if (!res.ok || res.salt == null) { setSaltEstError(res.error ?? "推定できませんでした"); return; }
+      setSaltEstError("");
+      setSalt(String(res.salt));
+      setSaltEstimated(true);
+      setSaltBasis(res.basis);
+    },
+    onError: () => setSaltEstError("推定できませんでした。通信状態を確認してもう一度お試しください。"),
+  });
+  // マスターフォーム用の食塩推定
+  const [mSaltEstError, setMSaltEstError] = useState("");
+  const mSaltEstMut = useMutation({
+    mutationFn: (foodName: string) => api.estimateSalt({ name: foodName }),
+    onSuccess: (res) => {
+      if (!res.ok || res.salt == null) { setMSaltEstError(res.error ?? "推定できませんでした"); return; }
+      setMSaltEstError("");
+      setMSalt(String(res.salt));
+      setMSaltEstimated(true);
+    },
+    onError: () => setMSaltEstError("推定できませんでした。通信状態を確認してもう一度お試しください。"),
   });
   const goalMut = useMutation({ mutationFn: () => api.updateGoal({ dailyGoal: Number(goalInput) }), onSuccess: () => { invalidate(); setShowGoal(false); } });
   const weightMut = useMutation({
@@ -573,7 +643,7 @@ export function App() {
     onSuccess: () => { invalidate(); setMasterToast("マスターを削除しました"); setTimeout(() => setMasterToast(""), 2500); },
   });
   const createMasterMut = useMutation({
-    mutationFn: () => api.createMaster({ name: mName.trim(), calories: Number(mCalories), protein: mProtein ? Number(mProtein) : null, fat: mFat ? Number(mFat) : null, carbs: mCarbs ? Number(mCarbs) : null, mealType: mMealType }),
+    mutationFn: () => api.createMaster({ name: mName.trim(), calories: Number(mCalories), protein: mProtein ? Number(mProtein) : null, fat: mFat ? Number(mFat) : null, carbs: mCarbs ? Number(mCarbs) : null, salt: mSalt !== "" && !Number.isNaN(Number(mSalt)) ? Number(mSalt) : null, nutritionEstimated: mNutritionEstimated, saltEstimated: mSaltEstimated, mealType: mMealType }),
     onSuccess: (res) => {
       if (!res.ok) { setMasterFormError(res.error ?? "登録できませんでした"); return; }
       setMasterFormError(""); setShowMasterForm(false); setEditingMaster(null); invalidate(); setMasterToast("マスターを追加しました"); setTimeout(() => setMasterToast(""), 2500);
@@ -581,7 +651,7 @@ export function App() {
     onError: () => setMasterFormError("保存できませんでした。入力を確認してください。"),
   });
   const updateMasterMut = useMutation({
-    mutationFn: () => api.updateMaster({ id: editingMaster!.id, name: mName.trim(), calories: Number(mCalories), protein: mProtein ? Number(mProtein) : null, fat: mFat ? Number(mFat) : null, carbs: mCarbs ? Number(mCarbs) : null, mealType: mMealType }),
+    mutationFn: () => api.updateMaster({ id: editingMaster!.id, name: mName.trim(), calories: Number(mCalories), protein: mProtein ? Number(mProtein) : null, fat: mFat ? Number(mFat) : null, carbs: mCarbs ? Number(mCarbs) : null, salt: mSalt !== "" && !Number.isNaN(Number(mSalt)) ? Number(mSalt) : null, nutritionEstimated: mNutritionEstimated, saltEstimated: mSaltEstimated, mealType: mMealType }),
     onSuccess: (res) => {
       if (!res.ok) { setMasterFormError(res.error ?? "保存できませんでした"); return; }
       setMasterFormError(""); setShowMasterForm(false); setEditingMaster(null); invalidate(); setMasterToast("マスターを更新しました"); setTimeout(() => setMasterToast(""), 2500);
@@ -589,29 +659,34 @@ export function App() {
     onError: () => setMasterFormError("保存できませんでした。入力を確認してください。"),
   });
 
-  function resetMasterForm() { setMName(""); setMCalories(""); setMProtein(""); setMFat(""); setMCarbs(""); setMMealType("lunch"); setEditingMaster(null); setShowMasterForm(false); setMasterFormError(""); }
+  function resetMasterForm() { setMName(""); setMCalories(""); setMProtein(""); setMFat(""); setMCarbs(""); setMSalt(""); setMNutritionEstimated(false); setMSaltEstimated(false); setMSaltEstError(""); setMMealType("lunch"); setEditingMaster(null); setShowMasterForm(false); setMasterFormError(""); }
   function startAddMaster() { resetMasterForm(); setShowMasterForm(true); setMasterFormError(""); window.scrollTo({ top: 0, behavior: "smooth" }); }
-  function startEditMaster(m: Master) { setEditingMaster(m); setMName(m.name); setMCalories(String(m.calories)); setMProtein(m.protein != null ? String(m.protein) : ""); setMFat(m.fat != null ? String(m.fat) : ""); setMCarbs(m.carbs != null ? String(m.carbs) : ""); setMMealType(m.lastMealType); setShowMasterForm(true); setMasterFormError(""); window.scrollTo({ top: 0, behavior: "smooth" }); }
+  function startEditMaster(m: Master) { setEditingMaster(m); setMName(m.name); setMCalories(String(m.calories)); setMProtein(m.protein != null ? String(m.protein) : ""); setMFat(m.fat != null ? String(m.fat) : ""); setMCarbs(m.carbs != null ? String(m.carbs) : ""); setMSalt(m.salt != null ? String(m.salt) : ""); setMNutritionEstimated(m.nutritionEstimated); setMSaltEstimated(m.saltEstimated); setMSaltEstError(""); setMMealType(m.lastMealType); setShowMasterForm(true); setMasterFormError(""); window.scrollTo({ top: 0, behavior: "smooth" }); }
   function saveMaster() { if (editingMaster) updateMasterMut.mutate(); else createMasterMut.mutate(); }
 
-  function resetForm() { setName(""); setCalories(""); setProtein(""); setFat(""); setCarbs(""); setPortion(1); setEditing(null); setShowForm(false); setSuggestOpen(false); setFormError(""); }
-  function startEdit(m: Meal) { const p = m.portion ?? 1; setEditing(m); setName(m.name); setPortion(p); setFormError(""); setCalories(String(unscaleKcal(m.calories, p))); setProtein(m.protein != null ? String(unscaleMacro(m.protein, p) ?? "") : ""); setFat(m.fat != null ? String(unscaleMacro(m.fat, p) ?? "") : ""); setCarbs(m.carbs != null ? String(unscaleMacro(m.carbs, p) ?? "") : ""); setMealType(m.mealType); setShowForm(true); setSuggestOpen(false); window.scrollTo({ top: 0, behavior: "smooth" }); }
+  function resetForm() { setName(""); setCalories(""); setProtein(""); setFat(""); setCarbs(""); setSalt(""); setNutritionEstimated(false); setSaltEstimated(false); setSaltBasis(""); setSaltEstError(""); setPortion(1); setEditing(null); setShowForm(false); setSuggestOpen(false); setFormError(""); }
+  function startEdit(m: Meal) { const p = m.portion ?? 1; setEditing(m); setName(m.name); setPortion(p); setFormError(""); setCalories(String(unscaleKcal(m.calories, p))); setProtein(m.protein != null ? String(unscaleMacro(m.protein, p) ?? "") : ""); setFat(m.fat != null ? String(unscaleMacro(m.fat, p) ?? "") : ""); setCarbs(m.carbs != null ? String(unscaleMacro(m.carbs, p) ?? "") : ""); setSalt(m.salt != null ? String(unscaleMacro(m.salt, p) ?? "") : ""); setNutritionEstimated(m.nutritionEstimated); setSaltEstimated(m.saltEstimated); setSaltBasis(""); setSaltEstError(""); setMealType(m.mealType); setShowForm(true); setSuggestOpen(false); window.scrollTo({ top: 0, behavior: "smooth" }); }
 
   function addRecent(item: RecentItem, t: MealType) {
-    addMut.mutate({ name: item.name, calories: item.calories, protein: item.protein, fat: item.fat, carbs: item.carbs, mealType: t, portion: instantPortion, targetDate: date });
+    addMut.mutate({ name: item.name, calories: item.calories, protein: item.protein, fat: item.fat, carbs: item.carbs, salt: item.salt, nutritionEstimated: item.nutritionEstimated, saltEstimated: item.saltEstimated, mealType: t, portion: instantPortion, targetDate: date });
   }
   function addMaster(m: Master, t: MealType) {
-    addMut.mutate({ name: m.name, calories: m.calories, protein: m.protein, fat: m.fat, carbs: m.carbs, mealType: t, masterId: m.id, portion: instantPortion, targetDate: date });
+    addMut.mutate({ name: m.name, calories: m.calories, protein: m.protein, fat: m.fat, carbs: m.carbs, salt: m.salt, nutritionEstimated: m.nutritionEstimated, saltEstimated: m.saltEstimated, mealType: t, masterId: m.id, portion: instantPortion, targetDate: date });
   }
   function addQuick(f: typeof QUICK_FOODS[number], t: MealType) {
-    addMut.mutate({ name: f.name, calories: f.kcal, protein: f.p, fat: f.f, carbs: f.c, mealType: t, portion: instantPortion, targetDate: date });
+    // クイック食品の値は一般的な目安＝推定として記録する（食塩も成分からの推定値）
+    addMut.mutate({ name: f.name, calories: f.kcal, protein: f.p, fat: f.f, carbs: f.c, salt: f.salt, nutritionEstimated: true, saltEstimated: true, mealType: t, portion: instantPortion, targetDate: date });
   }
-  function applySuggestion(s: { name: string; calories: number; protein: number | null; fat: number | null; carbs: number | null }) {
+  function applySuggestion(s: { name: string; calories: number; protein: number | null; fat: number | null; carbs: number | null; salt: number | null; nutritionEstimated: boolean; saltEstimated: boolean }) {
     setName(s.name);
     setCalories(String(s.calories));
     setProtein(s.protein != null ? String(s.protein) : "");
     setFat(s.fat != null ? String(s.fat) : "");
     setCarbs(s.carbs != null ? String(s.carbs) : "");
+    setSalt(s.salt != null ? String(s.salt) : "");
+    setNutritionEstimated(s.nutritionEstimated);
+    setSaltEstimated(s.saltEstimated);
+    setSaltBasis("");
     setSuggestOpen(false);
   }
 
@@ -652,7 +727,7 @@ export function App() {
     if (!day || !name.trim() || editing) return [];
     const q = name.trim();
     return day.masters.filter(m => m.name.includes(q)).slice(0, 5).map(m => ({
-      name: m.name, calories: m.calories, protein: m.protein, fat: m.fat, carbs: m.carbs, source: "master" as const,
+      name: m.name, calories: m.calories, protein: m.protein, fat: m.fat, carbs: m.carbs, salt: m.salt, nutritionEstimated: m.nutritionEstimated, saltEstimated: m.saltEstimated, source: "master" as const,
     }));
   }, [day, name, editing]);
 
@@ -715,6 +790,17 @@ export function App() {
                 <div><label className="block whitespace-nowrap text-xs font-bold text-[var(--dim)]" htmlFor="mf-f">脂質 g<span className="text-[10px] font-normal">（1食分）</span></label><input id="mf-f" {...FIELDS.createMaster.fat} inputMode="decimal" value={mFat} onChange={e => setMFat(e.target.value)} placeholder="任意" className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-2 py-2.5 text-sm" /></div>
                 <div><label className="block whitespace-nowrap text-xs font-bold text-[var(--dim)]" htmlFor="mf-c">炭水化物 g<span className="text-[10px] font-normal">（1食分）</span></label><input id="mf-c" {...FIELDS.createMaster.carbs} inputMode="decimal" value={mCarbs} onChange={e => setMCarbs(e.target.value)} placeholder="任意" className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-2 py-2.5 text-sm" /></div>
               </div>
+              <label className="block mt-3 text-xs font-bold text-[var(--dim)]" htmlFor="mf-salt">食塩相当量 g<span className="text-[10px] font-normal">（1食分・任意）</span></label>
+              <div className="flex gap-2 mt-1">
+                <input id="mf-salt" {...FIELDS.createMaster.salt} inputMode="decimal" value={mSalt} onChange={e => setMSalt(e.target.value)} placeholder="例：2.5（不明なら空欄）" className="flex-1 min-w-0 rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2.5 text-sm" />
+                <button type="button" disabled={!mName.trim() || mSaltEstMut.isPending} onClick={() => mSaltEstMut.mutate(mName.trim())} className="shrink-0 rounded-xl border border-sky-300 text-sky-700 dark:border-sky-700 dark:text-sky-300 px-3 py-2.5 text-xs font-bold disabled:opacity-40">{mSaltEstMut.isPending ? "推定中…" : "成分から推定"}</button>
+              </div>
+              <p className="text-[11px] text-[var(--dim)] mt-1">表示などで分からない場合は「成分から推定」で材料・調味料から推定できます（推定フラグが付きます）。</p>
+              {mSaltEstError && <p role="alert" className="text-xs text-red-600 mt-1">{mSaltEstError}</p>}
+              <div className="mt-3 space-y-1.5">
+                <label className="flex items-center gap-2 text-xs font-bold cursor-pointer"><input type="checkbox" checked={mNutritionEstimated} onChange={e => setMNutritionEstimated(e.target.checked)} className="w-4 h-4 accent-[#d97706]" />カロリー・PFCは推定値</label>
+                <label className="flex items-center gap-2 text-xs font-bold cursor-pointer"><input type="checkbox" checked={mSaltEstimated} disabled={mSalt === ""} onChange={e => setMSaltEstimated(e.target.checked)} className="w-4 h-4 accent-[#0284c7]" />食塩相当量は推定値</label>
+              </div>
               {masterFormError && <p className="mt-3 rounded-xl bg-red-50 border border-red-200 px-3 py-2 text-xs font-bold text-red-700 dark:bg-red-950 dark:border-red-800 dark:text-red-200">{masterFormError}</p>}
               <div className="flex gap-2 mt-4">
                 <button disabled={!mName.trim() || !mCalories || Number(mCalories) < 0 || (editingMaster ? updateMasterMut.isPending : createMasterMut.isPending)} onClick={saveMaster} className="flex-1 rounded-xl bg-[var(--accent)] text-white py-3 font-bold disabled:opacity-40">{editingMaster ? "更新する" : "追加する"}</button>
@@ -762,9 +848,10 @@ export function App() {
                   <div key={m.id} className="px-3.5 py-3">
                     <div className="flex items-start gap-2">
                       <div className="flex-1 min-w-0">
-                        <div className="text-sm font-bold leading-snug break-words">{m.name}</div>
+                        <div className="text-sm font-bold leading-snug break-words">{m.name}<EstimateBadges nutritionEstimated={m.nutritionEstimated} saltEstimated={m.saltEstimated} salt={m.salt} /></div>
                         <div className="text-[11px] text-[var(--dim)] mt-0.5">
                           {(m.protein != null || m.fat != null || m.carbs != null) ? <span>P {m.protein ?? "—"}g ・ F {m.fat ?? "—"}g ・ C {m.carbs ?? "—"}g（1食分）　</span> : <span>PFC未登録　</span>}
+                          <span>食塩 {m.salt != null ? `${fmtSalt(m.salt)}g` : "未登録"}　</span>
                           <span>{MEAL_LABEL[m.lastMealType].emoji} {MEAL_LABEL[m.lastMealType].label}</span>
                           {m.useCount > 0 ? <span> ・ {m.useCount}回記録</span> : <span> ・ 手動登録</span>}
                         </div>
@@ -835,6 +922,24 @@ export function App() {
                 ))}
                 <p className="text-[11px] text-[var(--dim)]">※ PFCの目安は一般的な参考値です。記録がない項目は0として表示しています。</p>
               </div>
+              {/* 食塩相当量の合計（記録がある食品のみ。未記録分は含まれない） */}
+              <div className="mt-3 rounded-xl bg-[var(--surface2)] px-3 py-2.5">
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="text-xs font-bold">🧂 食塩相当量（記録分のみ）</span>
+                  <span className="text-sm font-black">{day.saltRecordedCount > 0 ? `${fmtSalt(day.totalSalt)} g` : "—"}</span>
+                </div>
+                <p className="text-[11px] text-[var(--dim)] mt-1 leading-relaxed">
+                  {day.meals.length === 0
+                    ? "食事を記録すると、食塩相当量もここに合計されます。"
+                    : day.saltRecordedCount === 0
+                      ? "今日の記録には食塩相当量が入っていません。各食品の編集から入力できます。"
+                      : day.saltRecordedCount < day.meals.length
+                        ? `${day.meals.length}件中${day.saltRecordedCount}件分の合計です。残り${day.meals.length - day.saltRecordedCount}件は食塩未記録のため含まれていません。`
+                        : "今日の全記録分の合計です。"}
+                  {day.meals.some(m => m.saltEstimated && m.salt != null) ? " 推定値を含む食品があります（「食塩 推定」バッジ）。" : ""}
+                  {" "}1日の目標量の目安は男性7.5g未満・女性6.5g未満（厚生労働省）です。
+                </p>
+              </div>
               <button onClick={() => { setGoalInput(String(day.dailyGoal)); setShowGoal(v => !v); }} className="mt-3 w-full text-center text-xs font-bold text-[var(--accent)] py-2">目標カロリーを変更する（現在 {day.dailyGoal.toLocaleString()} kcal）</button>
               {showGoal && (
                 <div className="flex gap-2 mt-1">
@@ -855,7 +960,7 @@ export function App() {
             {showPhoto && (
               <section className="mt-3 rounded-2xl bg-[var(--surface)] border-2 border-[var(--accent2)] p-4">
                 <h2 className="font-display font-black">📸 写真から記録</h2>
-                <p className="text-[11px] text-[var(--dim)] mt-1 leading-relaxed">食事の写真を選ぶと、AIが料理ごとにカロリーとPFCを推定します。推定値は目安なので、内容を確認・修正してから記録してください。写真は解析のためだけに使われ、保存されません。</p>
+                <p className="text-[11px] text-[var(--dim)] mt-1 leading-relaxed">食事の写真を選ぶと、AIが料理ごとにカロリー・PFC・食塩相当量を推定します。食塩は、ラベル（栄養成分表示）が読み取れればその値、読み取れなければ材料・調味料から推定します。推定値は目安なので、内容を確認・修正してから記録してください。写真は解析のためだけに使われ、保存されません。</p>
                 <input ref={cameraInputRef} type="file" accept="image/*" capture="environment" className="hidden" aria-label="カメラで撮影する" onChange={e => { const f = e.target.files?.[0]; e.target.value = ""; if (f) void handlePhotoFile(f); }} />
                 <input ref={galleryInputRef} type="file" accept="image/*" className="hidden" aria-label="写真アルバムから選ぶ" onChange={e => { const f = e.target.files?.[0]; e.target.value = ""; if (f) void handlePhotoFile(f); }} />
                 <div className="flex gap-1.5 mt-3 flex-wrap" role="group" aria-label="写真の食事区分">
@@ -914,6 +1019,11 @@ export function App() {
                                 <div><label className="block whitespace-nowrap text-[10px] font-bold text-[var(--dim)]" htmlFor={`photo-f-${it.key}`}>F g</label><input id={`photo-f-${it.key}`} {...FIELDS.addMeal.fat} inputMode="decimal" value={it.fat} onChange={e => setPhotoItems(prev => prev ? prev.map(x => x.key === it.key ? { ...x, fat: e.target.value } : x) : prev)} placeholder="—" className="mt-0.5 w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-1.5 py-2 text-sm" /></div>
                                 <div><label className="block whitespace-nowrap text-[10px] font-bold text-[var(--dim)]" htmlFor={`photo-c-${it.key}`}>C g</label><input id={`photo-c-${it.key}`} {...FIELDS.addMeal.carbs} inputMode="decimal" value={it.carbs} onChange={e => setPhotoItems(prev => prev ? prev.map(x => x.key === it.key ? { ...x, carbs: e.target.value } : x) : prev)} placeholder="—" className="mt-0.5 w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-1.5 py-2 text-sm" /></div>
                               </div>
+                              <div className="flex items-end gap-2 mt-2">
+                                <div className="w-24 shrink-0"><label className="block text-[10px] font-bold text-[var(--dim)]" htmlFor={`photo-salt-${it.key}`}>食塩相当量 g</label><input id={`photo-salt-${it.key}`} {...FIELDS.addMeal.salt} inputMode="decimal" value={it.salt} onChange={e => setPhotoItems(prev => prev ? prev.map(x => x.key === it.key ? { ...x, salt: e.target.value } : x) : prev)} placeholder="—" className="mt-0.5 w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-1.5 py-2 text-sm" /></div>
+                                <label className="flex items-center gap-1.5 pb-2 text-[11px] font-bold cursor-pointer"><input type="checkbox" checked={it.saltEstimated} disabled={it.salt === ""} onChange={e => setPhotoItems(prev => prev ? prev.map(x => x.key === it.key ? { ...x, saltEstimated: e.target.checked } : x) : prev)} className="w-4 h-4 accent-[#0284c7]" />食塩は成分からの推定</label>
+                              </div>
+                              <p className="text-[10px] text-[var(--dim)] mt-1">カロリー・PFCは写真からの推定として記録されます。食塩は、ラベルの表示値ならチェックを外し、材料からの推定ならチェックを入れてください。</p>
                               {it.selected && it.calories !== "" && !Number.isNaN(Number(it.calories)) && photoPortion !== 1 && (
                                 <p className="text-[11px] text-[var(--dim)] mt-1.5">記録される量：{portionLabel(photoPortion)} ＝ {scaleKcal(Number(it.calories), photoPortion).toLocaleString()} kcal</p>
                               )}
@@ -925,9 +1035,12 @@ export function App() {
                     {(() => {
                       const targets = photoItems.filter(x => x.selected && x.calories !== "" && !Number.isNaN(Number(x.calories)));
                       const total = targets.reduce((s, x) => s + scaleKcal(Number(x.calories), photoPortion), 0);
+                      const saltTargets = targets.filter(x => x.salt !== "" && !Number.isNaN(Number(x.salt)));
+                      const saltTotal = saltTargets.reduce((s, x) => s + (scaleMacro(Number(x.salt), photoPortion) ?? 0), 0);
                       return (
                         <>
                           <p className="mt-3 text-sm font-bold" aria-live="polite">選択中 {targets.length}件 ・ 合計 {total.toLocaleString()} kcal{photoPortion !== 1 ? `（${portionLabel(photoPortion)}で換算）` : ""}を{MEAL_LABEL[mealType].label}に記録します</p>
+                          <p className="text-xs text-[var(--dim)] mt-0.5">食塩相当量の合計：{saltTargets.length > 0 ? `${fmtSalt(saltTotal)} g（${saltTargets.length}件分）` : "記録なし"}{saltTargets.some(x => x.saltEstimated) ? " ・ 推定を含む" : ""}</p>
                           <div className="flex gap-2 mt-3">
                             <button disabled={targets.length === 0 || photoSaving} onClick={() => void savePhotoItems()} className="flex-1 rounded-xl bg-[var(--accent2)] text-white py-3 font-bold disabled:opacity-40">{photoSaving ? "記録中…" : `選択した${targets.length}件を記録する`}</button>
                             <button disabled={photoSaving} onClick={() => { resetPhoto(); setShowPhoto(false); }} className="rounded-xl border border-[var(--border)] px-4 py-3 text-sm font-bold disabled:opacity-40">キャンセル</button>
@@ -963,7 +1076,7 @@ export function App() {
                     </button>
                   ))}
                 </div>
-                <p className="text-[11px] text-[var(--dim)] mt-2">カロリー・PFCは一般的な目安です。タップすると選択中の区分で{formatJa(date)}に記録され、マスターにも自動登録されます。</p>
+                <p className="text-[11px] text-[var(--dim)] mt-2">カロリー・PFC・食塩相当量は一般的な目安（推定）です。タップすると選択中の区分で{formatJa(date)}に記録され、マスターにも自動登録されます。</p>
               </section>
             )}
 
@@ -990,7 +1103,7 @@ export function App() {
                       <div key={m.id} className="flex items-center gap-2 py-2">
                         <button onClick={() => addMaster(m, mealType)} className="flex-1 min-w-0 text-left">
                           <span className="block text-[13px] font-bold truncate">{m.name}</span>
-                          <span className="block text-[11px] text-[var(--dim)]">{instantPortion !== 1 ? `${scaleKcal(m.calories, instantPortion)} kcal（${portionLabel(instantPortion)}／1食分 ${m.calories} kcal）` : `${m.calories} kcal`}{ m.useCount > 1 ? ` ・ ${m.useCount}回記録` : ""} ・ 最終 {MEAL_LABEL[m.lastMealType].label}</span>
+                          <span className="block text-[11px] text-[var(--dim)]">{instantPortion !== 1 ? `${scaleKcal(m.calories, instantPortion)} kcal（${portionLabel(instantPortion)}／1食分 ${m.calories} kcal）` : `${m.calories} kcal`}{m.salt != null ? ` ・ 食塩 ${fmtSalt(scaleMacro(m.salt, instantPortion) ?? m.salt)}g${m.saltEstimated ? "（推定）" : ""}` : ""}{m.nutritionEstimated ? " ・ カロリー等は推定" : ""}{ m.useCount > 1 ? ` ・ ${m.useCount}回記録` : ""} ・ 最終 {MEAL_LABEL[m.lastMealType].label}</span>
                         </button>
                         <button aria-label={`${m.name}を編集`} onClick={() => { setView("masters"); startEditMaster(m); }} className="text-xs font-bold px-2 py-1.5 rounded shrink-0 text-[var(--accent)]">編集</button>
                         <button aria-label={`${m.name}をマスターから削除`} onClick={() => { if (confirmDelMaster === m.id) { delMasterMut.mutate(m.id); setConfirmDelMaster(null); } else { setConfirmDelMaster(m.id); setTimeout(() => setConfirmDelMaster(null), 3000); } }} className={`text-xs font-bold px-2 py-1.5 rounded shrink-0 ${confirmDelMaster === m.id ? "bg-red-500 text-white" : "text-red-500"}`}>{confirmDelMaster === m.id ? "本当に削除" : "削除"}</button>
@@ -1024,7 +1137,7 @@ export function App() {
                       {day.recentByType[mealType].map(item => (
                         <button key={item.name} onClick={() => applySuggestion(item)} className="rounded-full bg-[var(--surface2)] border border-[var(--border)] px-3 py-2 text-left">
                           <span className="block text-[13px] font-bold leading-tight">{item.name}</span>
-                          <span className="block text-[11px] text-[var(--dim)]">1食分 {item.calories} kcal ・ {formatJa(item.lastDate)}{item.lastPortion !== 1 ? ` ・ 前回 ${portionLabel(item.lastPortion)}` : ""}</span>
+                          <span className="block text-[11px] text-[var(--dim)]">1食分 {item.calories} kcal{item.salt != null ? ` ・ 食塩 ${fmtSalt(item.salt)}g${item.saltEstimated ? "（推定）" : ""}` : ""} ・ {formatJa(item.lastDate)}{item.lastPortion !== 1 ? ` ・ 前回 ${portionLabel(item.lastPortion)}` : ""}</span>
                         </button>
                       ))}
                     </div>
@@ -1039,7 +1152,7 @@ export function App() {
                         <button key={`${s.source}-${s.name}`} onClick={() => applySuggestion(s)} className="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left hover:bg-[var(--surface2)]">
                           <span className="min-w-0">
                             <span className="block text-sm font-bold truncate">{s.name}</span>
-                            <span className="block text-[11px] text-[var(--dim)]">{s.source === "master" ? "📚 マスター登録済み" : "🕘 過去の記録"}</span>
+                            <span className="block text-[11px] text-[var(--dim)]">{s.source === "master" ? "📚 マスター登録済み" : "🕘 過去の記録"}{s.salt != null ? ` ・ 食塩 ${fmtSalt(s.salt)}g${s.saltEstimated ? "（推定）" : ""}` : ""}{s.nutritionEstimated ? " ・ カロリー等は推定" : ""}</span>
                           </span>
                           <span className="text-sm font-black whitespace-nowrap">{s.calories}<span className="text-[10px] font-normal text-[var(--dim)]"> kcal</span></span>
                         </button>
@@ -1054,12 +1167,25 @@ export function App() {
                   <div><label className="block whitespace-nowrap text-xs font-bold text-[var(--dim)]" htmlFor="f-f">脂質 g<span className="text-[10px] font-normal">（1食分）</span></label><input id="f-f" {...FIELDS.addMeal.fat} inputMode="decimal" value={fat} onChange={e => setFat(e.target.value)} placeholder="任意" className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-2 py-2.5 text-sm" /></div>
                   <div><label className="block whitespace-nowrap text-xs font-bold text-[var(--dim)]" htmlFor="f-c">炭水化物 g<span className="text-[10px] font-normal">（1食分）</span></label><input id="f-c" {...FIELDS.addMeal.carbs} inputMode="decimal" value={carbs} onChange={e => setCarbs(e.target.value)} placeholder="任意" className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-2 py-2.5 text-sm" /></div>
                 </div>
+                <label className="block mt-3 text-xs font-bold text-[var(--dim)]" htmlFor="f-salt">食塩相当量 g<span className="text-[10px] font-normal">（1食分・任意）</span></label>
+                <div className="flex gap-2 mt-1">
+                  <input id="f-salt" {...FIELDS.addMeal.salt} inputMode="decimal" value={salt} onChange={e => { setSalt(e.target.value); setSaltBasis(""); }} placeholder="例：2.5（不明なら空欄）" className="flex-1 min-w-0 rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2.5 text-sm" />
+                  <button type="button" disabled={!name.trim() || saltEstMut.isPending} onClick={() => saltEstMut.mutate(name.trim())} className="shrink-0 rounded-xl border border-sky-300 text-sky-700 dark:border-sky-700 dark:text-sky-300 px-3 py-2.5 text-xs font-bold disabled:opacity-40">{saltEstMut.isPending ? "推定中…" : "成分から推定"}</button>
+                </div>
+                <p className="text-[11px] text-[var(--dim)] mt-1">栄養成分表示などで分からない場合は「成分から推定」を押すと、食品名から材料・調味料をもとにAIが推定します（推定フラグが付きます）。</p>
+                {saltBasis && <p className="text-[11px] text-sky-700 dark:text-sky-300 mt-1" aria-live="polite">推定の根拠：{saltBasis}</p>}
+                {saltEstError && <p role="alert" className="text-xs text-red-600 mt-1">{saltEstError}</p>}
+                <div className="mt-3 space-y-1.5">
+                  <label className="flex items-center gap-2 text-xs font-bold cursor-pointer"><input type="checkbox" checked={nutritionEstimated} onChange={e => setNutritionEstimated(e.target.checked)} className="w-4 h-4 accent-[#d97706]" />カロリー・PFCは推定値（表示値ではなく目安の値）</label>
+                  <label className="flex items-center gap-2 text-xs font-bold cursor-pointer"><input type="checkbox" checked={saltEstimated} disabled={salt === ""} onChange={e => setSaltEstimated(e.target.checked)} className="w-4 h-4 accent-[#0284c7]" />食塩相当量は推定値（成分からの推定）</label>
+                </div>
                 {calories && !Number.isNaN(Number(calories)) && (
                   <p className="mt-3 rounded-xl bg-[var(--surface2)] px-3 py-2.5 text-sm font-bold" aria-live="polite">
                     {portion === 1
                       ? `記録される量：1食分 ＝ ${scaleKcal(Number(calories), 1).toLocaleString()} kcal`
                       : `記録される量：${portionLabel(portion)} ＝ ${scaleKcal(Number(calories), portion).toLocaleString()} kcal（1食分 ${Number(calories).toLocaleString()} kcal × ${portion}）`}
                     {portion !== 1 && (protein || fat || carbs) ? <span className="block text-[11px] font-normal text-[var(--dim)] mt-0.5">P {protein ? scaleMacro(Number(protein), portion) : "—"}g ・ F {fat ? scaleMacro(Number(fat), portion) : "—"}g ・ C {carbs ? scaleMacro(Number(carbs), portion) : "—"}g で記録されます</span> : null}
+                    {salt !== "" && !Number.isNaN(Number(salt)) ? <span className="block text-[11px] font-normal text-[var(--dim)] mt-0.5">食塩相当量 {portion !== 1 ? `${fmtSalt(scaleMacro(Number(salt), portion) ?? Number(salt))}g（1食分 ${fmtSalt(Number(salt))}g × ${portion}）` : `${fmtSalt(Number(salt))}g`}{saltEstimated ? "（推定）" : ""} で記録されます</span> : null}
                   </p>
                 )}
                 {formError && <p role="alert" className="text-xs text-red-600 mt-2">{formError}</p>}
@@ -1067,7 +1193,7 @@ export function App() {
                   {/* 無効化は「このボタン自身の送信中」だけに限定する。以前は追加側（addMut）の
                       実行中でも更新ボタンが無効になり、チップ追加などのリクエストが滞ると
                       分量だけ変更しても「更新する」が押せなくなっていた。 */}
-                  <button disabled={!name.trim() || !calories || Number(calories) < 0 || (editing ? editMut.isPending : addMut.isPending)} onClick={() => editing ? editMut.mutate() : addMut.mutate({ name: name.trim(), calories: Number(calories), protein: protein ? Number(protein) : null, fat: fat ? Number(fat) : null, carbs: carbs ? Number(carbs) : null, mealType, portion, targetDate: date }, { onSuccess: resetForm })} className="flex-1 rounded-xl bg-[var(--accent)] text-white py-3 font-bold disabled:opacity-40">{editing ? "更新する" : "記録する"}</button>
+                  <button disabled={!name.trim() || !calories || Number(calories) < 0 || (editing ? editMut.isPending : addMut.isPending)} onClick={() => editing ? editMut.mutate() : addMut.mutate({ name: name.trim(), calories: Number(calories), protein: protein ? Number(protein) : null, fat: fat ? Number(fat) : null, carbs: carbs ? Number(carbs) : null, salt: salt !== "" && !Number.isNaN(Number(salt)) ? Number(salt) : null, nutritionEstimated, saltEstimated, mealType, portion, targetDate: date }, { onSuccess: resetForm })} className="flex-1 rounded-xl bg-[var(--accent)] text-white py-3 font-bold disabled:opacity-40">{editing ? "更新する" : "記録する"}</button>
                   <button onClick={resetForm} className="rounded-xl border border-[var(--border)] px-4 py-3 text-sm font-bold">キャンセル</button>
                 </div>
                 {!editing && <p className="text-[11px] text-[var(--dim)] mt-2">記録するとマスター食品に自動登録されます（重複・よく似た名前は登録されません）。</p>}
@@ -1079,12 +1205,14 @@ export function App() {
               {(Object.keys(MEAL_LABEL) as MealType[]).map(t => {
                 const list = grouped[t];
                 const subtotal = list.reduce((s, m) => s + m.calories, 0);
+                const saltSubtotal = saltTotalOf(list);
+                const saltCount = list.filter(m => m.salt != null).length;
                 const recents = day.recentByType[t];
                 return (
                   <div key={t}>
                     <div className="flex items-baseline justify-between px-1">
                       <h3 className="font-display font-black">{MEAL_LABEL[t].emoji} {MEAL_LABEL[t].label}</h3>
-                      <span className="text-xs font-bold text-[var(--dim)]">{list.length ? `${subtotal.toLocaleString()} kcal` : "未記録"}</span>
+                      <span className="text-xs font-bold text-[var(--dim)]">{list.length ? `${subtotal.toLocaleString()} kcal${saltCount > 0 ? ` ・ 食塩 ${fmtSalt(saltSubtotal)}g` : ""}` : "未記録"}</span>
                     </div>
                     {recents.length > 0 && (
                       <div className="mt-1.5 flex gap-1.5 overflow-x-auto pb-1 px-0.5" aria-label={`${MEAL_LABEL[t].label}の最近の履歴`}>
@@ -1106,8 +1234,8 @@ export function App() {
                         {list.map(m => (
                           <div key={m.id} className="flex items-center gap-2 px-3.5 py-3">
                             <div className="flex-1 min-w-0">
-                              <div className="text-sm font-bold truncate">{m.name}{(m.portion ?? 1) !== 1 && <span className="ml-1.5 align-middle rounded-full bg-[var(--surface2)] border border-[var(--border)] px-1.5 py-0.5 text-[10px] font-bold text-[var(--accent)]">{portionLabel(m.portion ?? 1)}</span>}</div>
-                              {(m.protein != null || m.fat != null || m.carbs != null) && <div className="text-[11px] text-[var(--dim)]">P {m.protein ?? "—"}g ・ F {m.fat ?? "—"}g ・ C {m.carbs ?? "—"}g</div>}
+                              <div className="text-sm font-bold break-words">{m.name}{(m.portion ?? 1) !== 1 && <span className="ml-1.5 align-middle rounded-full bg-[var(--surface2)] border border-[var(--border)] px-1.5 py-0.5 text-[10px] font-bold text-[var(--accent)]">{portionLabel(m.portion ?? 1)}</span>}<EstimateBadges nutritionEstimated={m.nutritionEstimated} saltEstimated={m.saltEstimated} salt={m.salt} /></div>
+                              {(m.protein != null || m.fat != null || m.carbs != null || m.salt != null) && <div className="text-[11px] text-[var(--dim)]">{(m.protein != null || m.fat != null || m.carbs != null) ? <>P {m.protein ?? "—"}g ・ F {m.fat ?? "—"}g ・ C {m.carbs ?? "—"}g</> : null}{m.salt != null ? <>{(m.protein != null || m.fat != null || m.carbs != null) ? " ・ " : ""}食塩 {fmtSalt(m.salt)}g{m.saltEstimated ? "（推定）" : ""}</> : null}</div>}
                             </div>
                             <span className="font-display font-black whitespace-nowrap">{m.calories.toLocaleString()}<span className="text-[10px] font-normal text-[var(--dim)]"> kcal</span></span>
                             {m.id < 0 ? (

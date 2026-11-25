@@ -13,6 +13,9 @@ calories: z.number(),
 protein: z.number().nullable(),
 fat: z.number().nullable(),
 carbs: z.number().nullable(),
+salt: z.number().nullable(),
+nutritionEstimated: z.boolean(),
+saltEstimated: z.boolean(),
 mealType: mealTypeEnum,
 portion: z.number(),
 date: z.string(),
@@ -44,6 +47,9 @@ calories: z.number(),
 protein: z.number().nullable(),
 fat: z.number().nullable(),
 carbs: z.number().nullable(),
+salt: z.number().nullable(),
+nutritionEstimated: z.boolean(),
+saltEstimated: z.boolean(),
 lastMealType: mealTypeEnum,
 useCount: z.number(),
 lastUsedAt: z.string(),
@@ -103,6 +109,9 @@ calories: number;
 protein: number | null;
 fat: number | null;
 carbs: number | null;
+salt: number | null;
+nutritionEstimated: boolean;
+saltEstimated: boolean;
 mealType: MealType;
 };
 
@@ -151,10 +160,19 @@ const dupId = findDuplicateId(existing, normalized, canonical, cand.calories);
 const now = new Date();
 if (dupId!= null) {
 const row = await db.select().from(schema.masterFoods).where(eq(schema.masterFoods.id, dupId));
+const cur = row[0];
+// 既存マスターに食塩相当量が無く、新しい記録で判明したら補完する
+// （推定フラグは食塩の値とセットで引き継ぐ）。
+const patch: Partial<{ salt: number; saltEstimated: number }> = {};
+if (cur && cur.salt == null && cand.salt != null) {
+patch.salt = cand.salt;
+patch.saltEstimated = cand.saltEstimated ? 1 : 0;
+}
 await db.update(schema.masterFoods).set({
-useCount: (row[0]?.useCount?? 1) + 1,
+useCount: (cur?.useCount?? 1) + 1,
 lastUsedAt: now,
 lastMealType: cand.mealType,
+...patch,
 }).where(eq(schema.masterFoods.id, dupId));
 return;
 }
@@ -166,6 +184,9 @@ calories: cand.calories,
 protein: cand.protein,
 fat: cand.fat,
 carbs: cand.carbs,
+salt: cand.salt,
+nutritionEstimated: cand.nutritionEstimated ? 1 : 0,
+saltEstimated: cand.saltEstimated ? 1 : 0,
 lastMealType: cand.mealType,
 useCount: 1,
 lastUsedAt: now,
@@ -199,19 +220,37 @@ function toMeal(r: MealRow) {
 return {
 id: r.id, name: r.name, calories: r.calories,
 protein: r.protein, fat: r.fat, carbs: r.carbs,
+salt: r.salt ?? null,
+nutritionEstimated: (r.nutritionEstimated ?? 0) === 1,
+saltEstimated: (r.saltEstimated ?? 0) === 1,
 mealType: r.mealType as MealType,
 portion: r.portion ?? 1,
 date: r.date, created_at: r.createdAt.toISOString(),
 };
 }
 
+function toMaster(r: typeof schema.masterFoods.$inferSelect) {
+return {
+id: r.id, name: r.name, calories: r.calories,
+protein: r.protein, fat: r.fat, carbs: r.carbs,
+salt: r.salt ?? null,
+nutritionEstimated: (r.nutritionEstimated ?? 0) === 1,
+saltEstimated: (r.saltEstimated ?? 0) === 1,
+lastMealType: r.lastMealType as MealType,
+useCount: r.useCount, lastUsedAt: r.lastUsedAt.toISOString(),
+};
+}
+
 const recentItem = z.object({
 name: z.string(),
-// calories / PFC は「1食分（割合1）」に換算した基準値。追加時に選んだ割合で換算し直す。
+// calories / PFC / 食塩 は「1食分（割合1）」に換算した基準値。追加時に選んだ割合で換算し直す。
 calories: z.number(),
 protein: z.number().nullable(),
 fat: z.number().nullable(),
 carbs: z.number().nullable(),
+salt: z.number().nullable(),
+nutritionEstimated: z.boolean(),
+saltEstimated: z.boolean(),
 lastPortion: z.number(),
 lastDate: z.string(),
 });
@@ -223,6 +262,8 @@ totalCalories: z.number(),
 totalProtein: z.number(),
 totalFat: z.number(),
 totalCarbs: z.number(),
+totalSalt: z.number(),
+saltRecordedCount: z.number(),
 meals: z.array(mealObj),
 days: z.array(z.object({ date: z.string(), total: z.number(), count: z.number()})),
 weights: z.array(z.object({ id: z.number(), weight: z.number(), date: z.string()})),
@@ -290,6 +331,9 @@ calories: unscaleCalories(r.calories, r.portion ?? 1),
 protein: unscaleMacro(r.protein, r.portion ?? 1),
 fat: unscaleMacro(r.fat, r.portion ?? 1),
 carbs: unscaleMacro(r.carbs, r.portion ?? 1),
+salt: unscaleMacro(r.salt ?? null, r.portion ?? 1),
+nutritionEstimated: (r.nutritionEstimated ?? 0) === 1,
+saltEstimated: (r.saltEstimated ?? 0) === 1,
 lastPortion: r.portion ?? 1,
 lastDate: r.date,
 });
@@ -302,16 +346,13 @@ totalCalories: meals.reduce((s, m) => s + m.calories, 0),
 totalProtein: Math.round(meals.reduce((s, m) => s + (m.protein?? 0), 0) * 10) / 10,
 totalFat: Math.round(meals.reduce((s, m) => s + (m.fat?? 0), 0) * 10) / 10,
 totalCarbs: Math.round(meals.reduce((s, m) => s + (m.carbs?? 0), 0) * 10) / 10,
+totalSalt: Math.round(meals.reduce((s, m) => s + (m.salt?? 0), 0) * 10) / 10,
+saltRecordedCount: meals.filter(m => m.salt != null).length,
 meals,
 days,
 weights: weightRows.map(r => ({ id: r.id, weight: r.weight, date: r.date})),
 recentByType,
-masters: masterRows.map(r => ({
-id: r.id, name: r.name, calories: r.calories,
-protein: r.protein, fat: r.fat, carbs: r.carbs,
-lastMealType: r.lastMealType as MealType,
-useCount: r.useCount, lastUsedAt: r.lastUsedAt.toISOString(),
-})),
+masters: masterRows.map(toMaster),
 };
 },
 }),
@@ -326,6 +367,8 @@ totalCalories: z.number(),
 totalProtein: z.number(),
 totalFat: z.number(),
 totalCarbs: z.number(),
+totalSalt: z.number(),
+saltRecordedCount: z.number(),
 meals: z.array(mealObj),
 }),
 async handler(ctx, args) {
@@ -340,6 +383,8 @@ totalCalories: meals.reduce((s, m) => s + m.calories, 0),
 totalProtein: Math.round(meals.reduce((s, m) => s + (m.protein?? 0), 0) * 10) / 10,
 totalFat: Math.round(meals.reduce((s, m) => s + (m.fat?? 0), 0) * 10) / 10,
 totalCarbs: Math.round(meals.reduce((s, m) => s + (m.carbs?? 0), 0) * 10) / 10,
+totalSalt: Math.round(meals.reduce((s, m) => s + (m.salt?? 0), 0) * 10) / 10,
+saltRecordedCount: meals.filter(m => m.salt != null).length,
 meals,
 };
 },
@@ -387,6 +432,9 @@ calories: z.number(),
 protein: z.number().nullable(),
 fat: z.number().nullable(),
 carbs: z.number().nullable(),
+salt: z.number().nullable(),
+nutritionEstimated: z.boolean(),
+saltEstimated: z.boolean(),
 source: z.enum(["master", "history"]),
 })),
 }),
@@ -395,12 +443,12 @@ const db = ctx.db<typeof schema>();
 const q = normalizeName(args.query);
 const masters = await db.select().from(schema.masterFoods)
 .orderBy(desc(schema.masterFoods.useCount), desc(schema.masterFoods.lastUsedAt)).limit(100);
-const out: { name: string; calories: number; protein: number | null; fat: number | null; carbs: number | null; source: "master" | "history"}[] = [];
+const out: { name: string; calories: number; protein: number | null; fat: number | null; carbs: number | null; salt: number | null; nutritionEstimated: boolean; saltEstimated: boolean; source: "master" | "history"}[] = [];
 const seenNames = new Set<string>();
 for (const m of masters) {
 if (args.mealType && m.lastMealType!== args.mealType && q === "") continue;
 if (q &&!m.normalizedName.includes(q)) continue;
-out.push({ name: m.name, calories: m.calories, protein: m.protein, fat: m.fat, carbs: m.carbs, source: "master"});
+out.push({ name: m.name, calories: m.calories, protein: m.protein, fat: m.fat, carbs: m.carbs, salt: m.salt ?? null, nutritionEstimated: (m.nutritionEstimated ?? 0) === 1, saltEstimated: (m.saltEstimated ?? 0) === 1, source: "master"});
 seenNames.add(m.normalizedName);
 if (out.length >= 8) break;
 }
@@ -410,7 +458,7 @@ for (const r of rows) {
 const n = normalizeName(r.name);
 if (!n.includes(q) || seenNames.has(n)) continue;
 seenNames.add(n);
-out.push({ name: r.name, calories: unscaleCalories(r.calories, r.portion ?? 1), protein: unscaleMacro(r.protein, r.portion ?? 1), fat: unscaleMacro(r.fat, r.portion ?? 1), carbs: unscaleMacro(r.carbs, r.portion ?? 1), source: "history"});
+out.push({ name: r.name, calories: unscaleCalories(r.calories, r.portion ?? 1), protein: unscaleMacro(r.protein, r.portion ?? 1), fat: unscaleMacro(r.fat, r.portion ?? 1), carbs: unscaleMacro(r.carbs, r.portion ?? 1), salt: unscaleMacro(r.salt ?? null, r.portion ?? 1), nutritionEstimated: (r.nutritionEstimated ?? 0) === 1, saltEstimated: (r.saltEstimated ?? 0) === 1, source: "history"});
 if (out.length >= 8) break;
 }
 }
@@ -427,12 +475,7 @@ const db = ctx.db<typeof schema>();
 const rows = await db.select().from(schema.masterFoods)
 .orderBy(desc(schema.masterFoods.useCount), desc(schema.masterFoods.lastUsedAt)).limit(200);
 return {
-masters: rows.map(r => ({
-id: r.id, name: r.name, calories: r.calories,
-protein: r.protein, fat: r.fat, carbs: r.carbs,
-lastMealType: r.lastMealType as MealType,
-useCount: r.useCount, lastUsedAt: r.lastUsedAt.toISOString(),
-})),
+masters: rows.map(toMaster),
 };
 },
 }),
@@ -457,6 +500,9 @@ calories: z.number().int().min(0).max(10000),
 protein: z.number().min(0).max(1000).nullable().optional(),
 fat: z.number().min(0).max(1000).nullable().optional(),
 carbs: z.number().min(0).max(1000).nullable().optional(),
+salt: z.number().min(0).max(100).nullable().optional(),
+nutritionEstimated: z.boolean().optional(),
+saltEstimated: z.boolean().optional(),
 mealType: mealTypeEnum,
 }),
 response: z.object({ ok: z.boolean(), id: z.number().nullable(), error: z.string().nullable() }),
@@ -479,6 +525,9 @@ calories: args.calories,
 protein: args.protein ?? null,
 fat: args.fat ?? null,
 carbs: args.carbs ?? null,
+salt: args.salt ?? null,
+nutritionEstimated: args.nutritionEstimated ? 1 : 0,
+saltEstimated: args.salt != null && args.saltEstimated ? 1 : 0,
 lastMealType: args.mealType,
 useCount: 0,
 lastUsedAt: now,
@@ -490,7 +539,7 @@ return { ok: true, id: res[0]!.id, error: null };
 }),
 
 updateMaster: defineAction({
-description: "マスター食品の名前・カロリー・PFC・区分を修正します。別のマスターと名前が重なる場合は保存しません。",
+description: "マスター食品の名前・カロリー・PFC・食塩相当量・推定フラグ・区分を修正します。別のマスターと名前が重なる場合は保存しません。",
 request: z.object({
 id: z.number(),
 name: z.string().min(1).max(100),
@@ -498,6 +547,9 @@ calories: z.number().int().min(0).max(10000),
 protein: z.number().min(0).max(1000).nullable().optional(),
 fat: z.number().min(0).max(1000).nullable().optional(),
 carbs: z.number().min(0).max(1000).nullable().optional(),
+salt: z.number().min(0).max(100).nullable().optional(),
+nutritionEstimated: z.boolean().optional(),
+saltEstimated: z.boolean().optional(),
 mealType: mealTypeEnum,
 }),
 response: z.object({ ok: z.boolean(), error: z.string().nullable() }),
@@ -519,6 +571,9 @@ calories: args.calories,
 protein: args.protein ?? null,
 fat: args.fat ?? null,
 carbs: args.carbs ?? null,
+salt: args.salt ?? null,
+nutritionEstimated: args.nutritionEstimated ? 1 : 0,
+saltEstimated: args.salt != null && args.saltEstimated ? 1 : 0,
 lastMealType: args.mealType,
 }).where(eq(schema.masterFoods.id, args.id));
 ctx.invalidateQueries();
@@ -527,13 +582,16 @@ return { ok: true, error: null };
 }),
 
 addMeal: defineAction({
-description: "食事を1件追加し、重複でなければマスター食品にも登録します。calories等は1食分の基準値で受け取り、portion（割合）で換算して記録します。マスターには基準値で登録します。",
+description: "食事を1件追加し、重複でなければマスター食品にも登録します。calories等は1食分の基準値で受け取り、portion（割合）で換算して記録します。マスターには基準値で登録します。食塩相当量（salt、g）も同じ扱いで、不明なら null。推定フラグはカロリー・PFC用（nutritionEstimated）と食塩用（saltEstimated）を分けて受け取ります。",
 request: z.object({
 name: z.string().min(1).max(100),
 calories: z.number().int().min(0).max(10000),
 protein: z.number().min(0).max(1000).nullable().optional(),
 fat: z.number().min(0).max(1000).nullable().optional(),
 carbs: z.number().min(0).max(1000).nullable().optional(),
+salt: z.number().min(0).max(100).nullable().optional(),
+nutritionEstimated: z.boolean().optional(),
+saltEstimated: z.boolean().optional(),
 mealType: mealTypeEnum,
 portion: portionSchema.optional(),
 date: dateStr,
@@ -542,14 +600,21 @@ response: z.object({ id: z.number()}),
 async handler(ctx, args) {
 const db = ctx.db<typeof schema>();
 const portion = args.portion ?? 1;
+const salt = args.salt ?? null;
 const res = await db.insert(schema.meals).values({
 name: args.name, calories: scaleCalories(args.calories, portion),
 protein: scaleMacro(args.protein, portion), fat: scaleMacro(args.fat, portion), carbs: scaleMacro(args.carbs, portion),
+salt: scaleMacro(salt, portion),
+nutritionEstimated: args.nutritionEstimated ? 1 : 0,
+saltEstimated: salt != null && args.saltEstimated ? 1 : 0,
 mealType: args.mealType, portion, date: args.date,
 }).returning({ id: schema.meals.id});
 await registerMaster(ctx, {
 name: args.name, calories: args.calories,
 protein: args.protein?? null, fat: args.fat?? null, carbs: args.carbs?? null,
+salt,
+nutritionEstimated: args.nutritionEstimated ?? false,
+saltEstimated: salt != null && (args.saltEstimated ?? false),
 mealType: args.mealType,
 });
 ctx.invalidateQueries();
@@ -559,7 +624,7 @@ return { id: res[0]!.id};
 
 // マスターからワンタップ追加（マスターの利用回数も更新）
 addMealFromMaster: defineAction({
-description: "マスター食品を使って食事を1件追加します。portion（割合）でカロリー・PFCを換算して記録します。",
+description: "マスター食品を使って食事を1件追加します。portion（割合）でカロリー・PFC・食塩相当量を換算して記録し、推定フラグもマスターから引き継ぎます。",
 request: z.object({
 masterId: z.number(),
 mealType: mealTypeEnum,
@@ -576,6 +641,9 @@ const portion = args.portion ?? 1;
 const res = await db.insert(schema.meals).values({
 name: m.name, calories: scaleCalories(m.calories, portion),
 protein: scaleMacro(m.protein, portion), fat: scaleMacro(m.fat, portion), carbs: scaleMacro(m.carbs, portion),
+salt: scaleMacro(m.salt ?? null, portion),
+nutritionEstimated: m.nutritionEstimated ?? 0,
+saltEstimated: m.salt != null ? (m.saltEstimated ?? 0) : 0,
 mealType: args.mealType, portion, date: args.date,
 }).returning({ id: schema.meals.id});
 await db.update(schema.masterFoods).set({
@@ -587,7 +655,7 @@ return { id: res[0]!.id};
 }),
 
 updateMeal: defineAction({
-description: "食事記録を編集します。calories等は1食分の基準値で受け取り、portion（割合）で換算して保存します。",
+description: "食事記録を編集します。calories等は1食分の基準値で受け取り、portion（割合）で換算して保存します。食塩相当量と推定フラグ（カロリー・PFC用／食塩用）も同様に受け取ります。",
 request: z.object({
 id: z.number(),
 name: z.string().min(1).max(100),
@@ -595,6 +663,9 @@ calories: z.number().int().min(0).max(10000),
 protein: z.number().min(0).max(1000).nullable().optional(),
 fat: z.number().min(0).max(1000).nullable().optional(),
 carbs: z.number().min(0).max(1000).nullable().optional(),
+salt: z.number().min(0).max(100).nullable().optional(),
+nutritionEstimated: z.boolean().optional(),
+saltEstimated: z.boolean().optional(),
 mealType: mealTypeEnum,
 portion: portionSchema.optional(),
 }),
@@ -602,14 +673,21 @@ response: z.object({ ok: z.literal(true)}),
 async handler(ctx, args): Promise<{ ok: true}> {
 const db = ctx.db<typeof schema>();
 const portion = args.portion ?? 1;
+const salt = args.salt ?? null;
 await db.update(schema.meals).set({
 name: args.name, calories: scaleCalories(args.calories, portion),
 protein: scaleMacro(args.protein, portion), fat: scaleMacro(args.fat, portion), carbs: scaleMacro(args.carbs, portion),
+salt: scaleMacro(salt, portion),
+nutritionEstimated: args.nutritionEstimated ? 1 : 0,
+saltEstimated: salt != null && args.saltEstimated ? 1 : 0,
 mealType: args.mealType, portion,
 }).where(eq(schema.meals.id, args.id));
 await registerMaster(ctx, {
 name: args.name, calories: args.calories,
 protein: args.protein?? null, fat: args.fat?? null, carbs: args.carbs?? null,
+salt,
+nutritionEstimated: args.nutritionEstimated ?? false,
+saltEstimated: salt != null && (args.saltEstimated ?? false),
 mealType: args.mealType,
 });
 ctx.invalidateQueries();
@@ -680,7 +758,7 @@ return { ok: true};
 }),
 
 analyzeFoodPhoto: defineAction({
-description: "食事の写真をAIで解析し、写っている料理ごとに食品名・カロリー・PFCの推定値（1食分相当）を返します。記録はしません。",
+description: "食事の写真をAIで解析し、写っている料理ごとに食品名・カロリー・PFC・食塩相当量の推定値（1食分相当）を返します。記録はしません。",
 request: z.object({
 imageBase64: z.string().min(100).max(8000000),
 mimeType: z.enum(["image/jpeg", "image/png"]),
@@ -696,10 +774,12 @@ calories: z.number(),
 protein: z.number().nullable(),
 fat: z.number().nullable(),
 carbs: z.number().nullable(),
+salt: z.number().nullable(),
+saltEstimated: z.boolean(),
 })),
 error: z.string().nullable(),
 }),
-async handler(ctx, args): Promise<{ ok: boolean; isFood: boolean; description: string; items: { name: string; calories: number; protein: number | null; fat: number | null; carbs: number | null }[]; error: string | null }> {
+async handler(ctx, args): Promise<{ ok: boolean; isFood: boolean; description: string; items: { name: string; calories: number; protein: number | null; fat: number | null; carbs: number | null; salt: number | null; saltEstimated: boolean }[]; error: string | null }> {
 const inferenceSchema = z.object({
 isFood: z.boolean(),
 description: z.string(),
@@ -709,6 +789,8 @@ calories: z.number(),
 protein: z.number().nullable(),
 fat: z.number().nullable(),
 carbs: z.number().nullable(),
+salt: z.number().nullable(),
+saltEstimated: z.boolean(),
 })),
 });
 try {
@@ -722,6 +804,7 @@ const result = await ctx.inference.complete(
 - name は日本語で、分量の目安を含めてください（例: 「ごはん（茶碗1杯）」「鶏の唐揚げ 4個」）。
 - calories はその品目の写っている量に対する推定カロリー（kcal、整数）。
 - protein / fat / carbs はその品目のたんぱく質・脂質・炭水化物（g、小数1桁まで）。推定できる場合は必ず数値を入れてください。
+- salt はその品目の食塩相当量（g、小数1桁まで）。写真に栄養成分表示（ラベル）が写っていて食塩相当量が読み取れる場合は、その表示値を入れ、saltEstimated を false にしてください。表示が読み取れない場合は、その料理の材料・調味料・味付けの濃さから成分をもとに推定し、saltEstimated を true にしてください。味噌汁・スープ・漬物・加工肉・麺類のつゆなど塩分を含む品目は必ず推定値を入れてください。塩分をほぼ含まない品目（白ごはん、果物など）は 0.0〜0.1 程度で構いません。
 - 写真から見える量・大きさ・一般的な日本の食事の分量を根拠に、現実的な値を推定してください。過度に丸い値ではなく、品目ごとに妥当な値を付けてください。
 - description には写真全体の概要を1〜2文で書いてください（例: 「鮭の塩焼き定食です。ごはん、味噌汁、小鉢が含まれます」）。`,
 {
@@ -739,10 +822,55 @@ calories: Math.max(0, Math.min(10000, Math.round(i.calories))),
 protein: i.protein == null ? null : Math.max(0, Math.min(1000, Math.round(i.protein * 10) / 10)),
 fat: i.fat == null ? null : Math.max(0, Math.min(1000, Math.round(i.fat * 10) / 10)),
 carbs: i.carbs == null ? null : Math.max(0, Math.min(1000, Math.round(i.carbs * 10) / 10)),
+salt: i.salt == null ? null : Math.max(0, Math.min(100, Math.round(i.salt * 10) / 10)),
+saltEstimated: i.salt == null ? false : i.saltEstimated,
 }));
 return { ok: true, isFood: result.isFood, description: result.description ?? "", items: result.isFood ? items : [], error: null };
 } catch {
 return { ok: false, isFood: false, description: "", items: [], error: "写真を解析できませんでした。明るい場所で料理全体が写るように撮り直してください。" };
+}
+},
+}),
+
+// 食塩相当量が表示等で分からない食品について、材料・調味料からAIが推定する。記録はしない。
+estimateSalt: defineAction({
+description: "食品名（と任意で材料メモ）から、その食品1食分の食塩相当量（g）を材料・調味料をもとにAIが推定します。記録はしません。",
+request: z.object({
+name: z.string().min(1).max(100),
+ingredients: z.string().max(500).optional(),
+}),
+response: z.object({
+ok: z.boolean(),
+salt: z.number().nullable(),
+basis: z.string(),
+error: z.string().nullable(),
+}),
+async handler(ctx, args): Promise<{ ok: boolean; salt: number | null; basis: string; error: string | null }> {
+const inferenceSchema = z.object({
+salt: z.number(),
+basis: z.string(),
+});
+try {
+const ingHint = args.ingredients?.trim() ? `\n材料・調味料のメモ: ${args.ingredients.trim()}` : "";
+const result = await ctx.inference.complete(
+`あなたは日本の食事の栄養推定の専門家です。次の食品について、1食分（名前やメモに分量の指定があればその量）の食塩相当量（g）を推定してください。
+
+食品名: ${args.name.trim()}${ingHint}
+
+推定の考え方:
+- その料理に一般的に使われる材料と調味料（食塩、しょうゆ、味噌、ソース、ドレッシング、加工肉・練り製品の塩分など）の量から積み上げて推定してください。
+- 日本の一般的な家庭料理・外食の味付けを基準にしてください。麺類は「つゆを全部飲む場合」と「飲まない場合」で大きく変わりますが、ここでは実際に口にする一般的な量（つゆは一部残す前提）で推定してください。
+- salt は小数1桁までの数値で返してください。塩分をほぼ含まない食品（白ごはん、果物、無塩の飲み物など）は 0.0 で構いません。
+- basis には、推定の根拠を1文で簡潔に書いてください（例: 「味噌汁1杯の味噌約18gから約2.0gと推定」）。`,
+{
+schema: inferenceSchema,
+timeout_secs: 60,
+},
+);
+const salt = Math.max(0, Math.min(100, Math.round(result.salt * 10) / 10));
+return { ok: true, salt, basis: result.basis ?? "", error: null };
+} catch {
+return { ok: false, salt: null, basis: "", error: "食塩相当量を推定できませんでした。通信状態を確認してもう一度お試しいただくか、値を直接入力してください。" };
 }
 },
 }),
@@ -763,6 +891,9 @@ for (const r of byKey.values()) {
 await registerMaster(ctx, {
 name: r.name, calories: unscaleCalories(r.calories, r.portion ?? 1),
 protein: unscaleMacro(r.protein, r.portion ?? 1), fat: unscaleMacro(r.fat, r.portion ?? 1), carbs: unscaleMacro(r.carbs, r.portion ?? 1),
+salt: unscaleMacro(r.salt ?? null, r.portion ?? 1),
+nutritionEstimated: (r.nutritionEstimated ?? 0) === 1,
+saltEstimated: (r.saltEstimated ?? 0) === 1,
 mealType: r.mealType as MealType,
 });
 }
